@@ -73,7 +73,7 @@ jobs:
           MAX_URLS_PER_SITEMAP: ${{ github.event.inputs.urls_per_sitemap }}
           MAX_WORKERS: ${{ github.event.inputs.max_workers }}
         run: |
-          python cymax_scrapper/main.py
+          python cymax_scraper/main.py
 
       - name: Upload chunk
         uses: actions/upload-artifact@v4
