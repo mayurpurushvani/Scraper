@@ -1,0 +1,22 @@
+{
+  "scraping": {
+    "max_threads": 3,
+    "max_products": 2,
+    "sitemap_limit": 500,
+    "retry_attempts": 3,
+    "min_html_size": 20000
+  },
+  "product_validation": {
+    "min_name_length": 10
+  },
+  "delays": {
+    "human_delay_min": 5,
+    "human_delay_max": 12,
+    "inter_request_delay": 2
+  },
+  "sitemap": {
+    "urls": [
+      "https://www.cymax.com/sitemap13.xml"
+    ]
+  }
+}
