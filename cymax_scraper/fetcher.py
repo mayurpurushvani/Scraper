@@ -39,7 +39,10 @@ class Fetcher:
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option('useAutomationExtension', False)
         
-        service = Service(ChromeDriverManager().install())
+        # service = Service(ChromeDriverManager().install())
+        # driver = webdriver.Chrome(service=service, options=options)
+        chromedriver_path = os.environ.get('CHROMEDRIVER_PATH', '/opt/hostedtoolcache/setup-chrome/chromedriver/stable/x64/chromedriver')
+        service = Service(chromedriver_path)
         driver = webdriver.Chrome(service=service, options=options)
         
         driver.execute_script("""
