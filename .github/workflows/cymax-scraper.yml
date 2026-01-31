@@ -54,6 +54,14 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+      
+      # CRITICAL: Chrome FIRST before Python deps
+      - name: Setup Chrome and ChromeDriver
+        uses: browser-actions/setup-chrome@v1
+        with:
+          chrome-version: stable
+          install-chromedriver: true
+          install-dependencies: true
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -63,14 +71,16 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pandas selenium==4.15.2 beautifulsoup4==4.12.3 lxml==4.9.4 webdriver-manager==4.0.1
+          pip install pandas selenium==4.15.2 beautifulsoup4==4.12.3 lxml==4.9.4 webdriver-manager==4.0.1 requests==2.31.0
 
-      - name: Setup Chrome and ChromeDriver
-        uses: browser-actions/setup-chrome@v1
-        with:
-          chrome-version: stable
-          install-chromedriver: true
-          install-dependencies: true
+      - name: Debug environment
+        run: |
+          which python
+          which google-chrome
+          which chromedriver
+          google-chrome --version
+          chromedriver --version
+          echo "Chrome path: $(which google-chrome)"
 
       - name: Run scraper
         env:
@@ -79,7 +89,10 @@ jobs:
           MAX_SITEMAPS: ${{ matrix.limit }}
           MAX_URLS_PER_SITEMAP: ${{ github.event.inputs.urls_per_sitemap }}
           MAX_WORKERS: ${{ github.event.inputs.max_workers }}
+          CHROME_BIN: /usr/bin/google-chrome-stable
+          CHROMEDRIVER_PATH: /usr/bin/chromedriver
         run: |
+          chmod +x cymax_scraper/main.py
           python cymax_scraper/main.py
 
       - name: Upload chunk
@@ -109,6 +122,7 @@ jobs:
             echo "Merged $(wc -l < cymax_full.csv) rows"
           else
             echo "No CSV files found"
+            echo "url,title,price,sku" > cymax_full.csv
           fi
 
       - name: Build output filename
