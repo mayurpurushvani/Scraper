@@ -57,6 +57,7 @@ jobs:
       
       # CRITICAL: Chrome FIRST before Python deps
       - name: Setup Chrome and ChromeDriver
+        id: chrome
         uses: browser-actions/setup-chrome@v1
         with:
           chrome-version: stable
@@ -71,16 +72,15 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pandas selenium==4.15.2 beautifulsoup4==4.12.3 lxml==4.9.4 webdriver-manager==4.0.1 requests==2.31.0
+          pip install pandas==2.1.4 selenium==4.15.2 beautifulsoup4==4.12.3 lxml==4.9.4 requests==2.31.0
 
       - name: Debug environment
         run: |
-          which python
-          which google-chrome
-          which chromedriver
-          google-chrome --version
-          chromedriver --version
           echo "Chrome path: $(which google-chrome)"
+          echo "Chromedriver: $(which chromedriver)"
+          CHROMEDRIVER_PATH=$(find /opt/hostedtoolcache -name chromedriver -type f 2>/dev/null | head -1)
+          echo "Full ChromeDriver: $CHROMEDRIVER_PATH"
+          echo "CHROMEDRIVER_PATH=$CHROMEDRIVER_PATH" >> $GITHUB_ENV
 
       - name: Run scraper
         env:
@@ -90,9 +90,11 @@ jobs:
           MAX_URLS_PER_SITEMAP: ${{ github.event.inputs.urls_per_sitemap }}
           MAX_WORKERS: ${{ github.event.inputs.max_workers }}
           SELENIUM_MANAGER_DISABLED: "true"
+          CHROME_BIN: /usr/bin/google-chrome
+          CHROMEDRIVER_PATH: ${{ env.CHROMEDRIVER_PATH }}
+          SELENIUM_MANAGER_DRIVER: "false"
         run: |
-          chmod +x cymax_scraper/main.py
-          python cymax_scraper/main.py
+          run: python cymax_scraper/main.py
 
       - name: Upload chunk
         if: always()
