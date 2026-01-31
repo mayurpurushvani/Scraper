@@ -89,8 +89,7 @@ jobs:
           MAX_SITEMAPS: ${{ matrix.limit }}
           MAX_URLS_PER_SITEMAP: ${{ github.event.inputs.urls_per_sitemap }}
           MAX_WORKERS: ${{ github.event.inputs.max_workers }}
-          CHROME_BIN: /usr/bin/google-chrome-stable
-          CHROMEDRIVER_PATH: /usr/bin/chromedriver
+          SELENIUM_MANAGER_DISABLED: "true"
         run: |
           chmod +x cymax_scraper/main.py
           python cymax_scraper/main.py
