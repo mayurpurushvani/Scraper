@@ -65,6 +65,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install pandas selenium==4.15.2 beautifulsoup4==4.12.3 lxml==4.9.4 webdriver-manager==4.0.1
 
+      - name: Install Chrome & ChromeDriver
+        run: |
+          wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
+          echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list
+          sudo apt-get update
+          sudo apt-get install -y google-chrome-stable
+          
+          google-chrome --version
+
       - name: Run scraper
         env:
           CURR_URL: ${{ matrix.url }}
