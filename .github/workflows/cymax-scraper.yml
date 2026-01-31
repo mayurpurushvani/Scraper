@@ -94,7 +94,7 @@ jobs:
           CHROMEDRIVER_PATH: ${{ env.CHROMEDRIVER_PATH }}
           SELENIUM_MANAGER_DRIVER: "false"
         run: |
-          run: python cymax_scraper/main.py
+          python cymax_scraper/main.py
 
       - name: Upload chunk
         if: always()
