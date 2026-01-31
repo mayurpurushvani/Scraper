@@ -65,14 +65,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install pandas selenium==4.15.2 beautifulsoup4==4.12.3 lxml==4.9.4 webdriver-manager==4.0.1
 
-      - name: Install Chrome & ChromeDriver
-        run: |
-          wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
-          echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list
-          sudo apt-get update
-          sudo apt-get install -y google-chrome-stable
-          
-          google-chrome --version
+      - name: Setup Chrome and ChromeDriver
+        uses: browser-actions/setup-chrome@v1
+        with:
+          chrome-version: stable
+          install-chromedriver: true
+          install-dependencies: true
 
       - name: Run scraper
         env:
@@ -85,6 +83,7 @@ jobs:
           python cymax_scraper/main.py
 
       - name: Upload chunk
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: cymax_chunk_${{ matrix.offset }}
@@ -100,12 +99,17 @@ jobs:
 
       - name: Merge CSVs
         run: |
+          shopt -s nullglob
           FIRST=$(ls chunks/*/*.csv | head -n 1)
-          head -n 1 "$FIRST" > cymax_full.csv
-
-          for f in chunks/*/*.csv; do
-            tail -n +2 "$f" | sed '/^$/d' >> cymax_full.csv
-          done
+          if [ -n "$FIRST" ]; then
+            head -n 1 "$FIRST" > cymax_full.csv
+            for f in chunks/*/*.csv; do
+              tail -n +2 "$f" | grep -v '^$' >> cymax_full.csv
+            done
+            echo "Merged $(wc -l < cymax_full.csv) rows"
+          else
+            echo "No CSV files found"
+          fi
 
       - name: Build output filename
         id: meta
@@ -114,7 +118,15 @@ jobs:
           DATE=$(date +%F)
           echo "name=cymax_${SITE}_${DATE}.csv" >> $GITHUB_OUTPUT
 
+      - name: Upload final CSV
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cymax_complete_dataset
+          path: cymax_full.csv
+
       - name: Upload to FTP
+        if: success()
         env:
           FTP_HOST: ${{ secrets.FTP_HOST }}
           FTP_USER: ${{ secrets.FTP_USER }}
@@ -122,7 +134,7 @@ jobs:
           FTP_BASE_DIR: ${{ secrets.FTP_PATH }}
           FILE: ${{ steps.meta.outputs.name }}
         run: |
-          sudo apt-get install -y lftp
+          sudo apt-get update && sudo apt-get install -y lftp
           lftp -u "$FTP_USER","$FTP_PASS" "$FTP_HOST" <<EOF
           mkdir -p $FTP_BASE_DIR
           cd $FTP_BASE_DIR
