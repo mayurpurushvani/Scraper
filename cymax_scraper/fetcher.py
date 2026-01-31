@@ -39,7 +39,7 @@ class Fetcher:
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option('useAutomationExtension', False)
         
-        chromedriver_path = "/opt/hostedtoolcache/setup-chrome/chromedriver/stable/x64/chromedriver"
+        chromedriver_path = "/usr/lib/chromium-browser/chromedriver"
         service = Service(chromedriver_path)
         
         options.add_argument("--disable-web-security")
