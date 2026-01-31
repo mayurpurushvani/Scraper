@@ -1,18 +1,16 @@
 {
   "scraping": {
-    "max_threads": 3,
-    "max_products": 2,
-    "sitemap_limit": 500,
-    "retry_attempts": 3,
-    "min_html_size": 20000
+    "retry_attempts": 2,
+    "min_html_size": 8000,
+    "sitemap_limit": 40000
   },
   "product_validation": {
     "min_name_length": 10
   },
   "delays": {
-    "human_delay_min": 5,
-    "human_delay_max": 12,
-    "inter_request_delay": 2
+    "human_delay_min": 1.0,
+    "human_delay_max": 2.0,
+    "inter_request_delay": 0.1
   },
   "sitemap": {
     "urls": [

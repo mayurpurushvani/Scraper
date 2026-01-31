@@ -56,7 +56,11 @@ def process_product(url, worker_id):
         fetcher = Fetcher()
         html = fetcher.fetch(url)
         fetcher.close()
-        
+
+        if '<div id="products-list-page"' in html or 'id="products-list-page"' in html:
+            print(f"SKIP LISTING: {short_url}")
+            return 0
+
         if html and len(html) > 12000:
             data = parse_product(html, url)
             if is_perfect_data(data):
