@@ -28,6 +28,7 @@ def parse_product(html, url):
         product_id_match = re.search(r'"productId"\s*:\s*"([^"]+)"', raw_json)
         if product_id_match:
             product_id = product_id_match.group(1)
+            sku = product_id
             variant_id = product_id
             
         product_name_match = re.search(r'"productName"\s*:\s*"([^"]{10,200})"', raw_json)
@@ -41,7 +42,6 @@ def parse_product(html, url):
         mpn_match = re.search(r'"manufacturerPartNumbers"\s*:\s*\[\s*"([^"]+)"', raw_json)
         if mpn_match:
             mpn = mpn_match.group(1)
-            sku = mpn
             
         image_match = re.search(r'"productImageURL"\s*:\s*"([^"]+)"', raw_json)
         if image_match:
@@ -55,8 +55,6 @@ def parse_product(html, url):
     url_mpn_match = re.search(r'([A-Z0-9-]{6,20})\.htm$', url)
     if url_mpn_match:
         mpn = url_mpn_match.group(1)
-        if not sku:
-            sku = url_mpn_match.group(1)
     
     breadcrumbs = soup.select('ol.breadcrumb li a')
     categories = []
