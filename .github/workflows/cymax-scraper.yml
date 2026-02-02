@@ -1,4 +1,4 @@
-name: Cymax Scraper (Optimized Chrome Setup)
+name: Cymax Scraper (Fixed Version Matching)
 
 on:
   workflow_dispatch:
@@ -61,72 +61,141 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install Chrome & ChromeDriver
+      - name: Install System Dependencies
         run: |
-          # Install dependencies
           sudo apt-get update
           sudo apt-get install -y \
-            wget gnupg ca-certificates unzip curl \
+            wget gnupg ca-certificates unzip curl jq \
             libnss3 libatk1.0-0 libatk-bridge2.0-0 \
             libcups2 libdrm2 libxkbcommon0 \
             libxcomposite1 libxdamage1 libxrandr2 \
             libgbm1 libasound2 libpangocairo-1.0-0 \
             libpango-1.0-0 libcairo2 libgdk-pixbuf2.0-0
 
-          # Install Chrome
-          echo "Installing Chrome..."
-          wget -q -O /tmp/chrome.deb \
-            "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb"
-          sudo apt-get install -y /tmp/chrome.deb
-          rm /tmp/chrome.deb
-
-          # Get Chrome version
-          CHROME_VERSION=$(google-chrome --version | grep -oP '\d+\.\d+\.\d+\.\d+')
-          echo "Chrome version: $CHROME_VERSION"
+      - name: Install Chrome (Specific Version)
+        run: |
+          echo "=== Installing Chrome ==="
           
-          # Extract major version for ChromeDriver
+          # Method 1: Install Chrome 145 to match ChromeDriver 145
+          echo "Downloading Chrome version 145..."
+          
+          # Download Chrome 145.0.7632.26 (to match ChromeDriver)
+          wget -q -O /tmp/chrome.deb \
+            "https://dl.google.com/linux/chrome/deb/pool/main/g/google-chrome-stable/google-chrome-stable_145.0.7632.26-1_amd64.deb"
+          
+          if [ -f /tmp/chrome.deb ]; then
+            sudo apt-get install -y /tmp/chrome.deb
+            rm /tmp/chrome.deb
+          else
+            # Fallback: Install latest stable
+            echo "Specific version not found, installing latest..."
+            wget -q -O /tmp/chrome_latest.deb \
+              "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb"
+            sudo apt-get install -y /tmp/chrome_latest.deb
+            rm /tmp/chrome_latest.deb
+          fi
+          
+          echo "Chrome version after installation:"
+          google-chrome --version || true
+
+      - name: Install Matching ChromeDriver
+        run: |
+          echo "=== Installing ChromeDriver ==="
+          
+          # Get installed Chrome version
+          CHROME_VERSION=$(google-chrome --version | grep -oP '\d+\.\d+\.\d+\.\d+' | head -1)
+          echo "Installed Chrome version: $CHROME_VERSION"
+          
+          if [ -z "$CHROME_VERSION" ]; then
+            echo "ERROR: Could not determine Chrome version"
+            exit 1
+          fi
+          
+          # Extract major version
           MAJOR_VERSION=$(echo $CHROME_VERSION | cut -d. -f1)
           echo "Major version: $MAJOR_VERSION"
-
-          # Install matching ChromeDriver
-          echo "Installing ChromeDriver..."
           
-          # Method 1: Use Chrome for Testing API (most reliable)
-          LATEST_VERSIONS=$(curl -s "https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions.json")
-          STABLE_VERSION=$(echo $LATEST_VERSIONS | grep -o '"version":"[^"]*"' | head -1 | cut -d'"' -f4)
+          # Get available ChromeDriver versions
+          echo "Fetching available ChromeDriver versions for Chrome $MAJOR_VERSION..."
           
-          echo "Latest stable Chrome for Testing: $STABLE_VERSION"
+          # Try to get exact match first
+          if [ "$MAJOR_VERSION" = "145" ]; then
+            CHROMEDRIVER_URL="https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/145.0.7632.26/linux64/chromedriver-linux64.zip"
+          elif [ "$MAJOR_VERSION" = "144" ]; then
+            CHROMEDRIVER_URL="https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/144.0.7559.109/linux64/chromedriver-linux64.zip"
+          else
+            # Use the last-known-good API
+            echo "Using last-known-good API..."
+            LATEST_DATA=$(curl -s "https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions.json")
+            
+            # Try to find matching version
+            MATCHING_VERSION=$(echo $LATEST_DATA | jq -r '.channels.Stable.version' 2>/dev/null || echo "")
+            
+            if [ -n "$MATCHING_VERSION" ]; then
+              CHROMEDRIVER_URL="https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/$MATCHING_VERSION/linux64/chromedriver-linux64.zip"
+            else
+              # Fallback: Use major version with .0.0.0
+              CHROMEDRIVER_URL="https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/$MAJOR_VERSION.0.0.0/linux64/chromedriver-linux64.zip"
+            fi
+          fi
           
-          # Download ChromeDriver
-          CHROMEDRIVER_URL="https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/$STABLE_VERSION/linux64/chromedriver-linux64.zip"
           echo "Downloading ChromeDriver from: $CHROMEDRIVER_URL"
           
-          curl -L "$CHROMEDRIVER_URL" -o /tmp/chromedriver.zip
+          # Download ChromeDriver
+          curl -L "$CHROMEDRIVER_URL" -o /tmp/chromedriver.zip || {
+            echo "Failed to download from primary URL, trying alternative..."
+            
+            # Alternative: Use storage.googleapis.com
+            if [ -n "$MATCHING_VERSION" ]; then
+              ALT_URL="https://storage.googleapis.com/chrome-for-testing-public/$MATCHING_VERSION/linux64/chromedriver-linux64.zip"
+            else
+              ALT_URL="https://storage.googleapis.com/chrome-for-testing-public/$MAJOR_VERSION.0.0.0/linux64/chromedriver-linux64.zip"
+            fi
+            
+            echo "Trying alternative URL: $ALT_URL"
+            curl -L "$ALT_URL" -o /tmp/chromedriver.zip
+          }
+          
+          # Extract and install
           unzip -q /tmp/chromedriver.zip -d /tmp/
           
-          # Move chromedriver binary to /usr/local/bin
-          find /tmp/chromedriver-linux64 -name "chromedriver" -type f -exec sudo mv {} /usr/local/bin/chromedriver \;
+          # Find the chromedriver binary (it might be in a subdirectory)
+          if [ -f "/tmp/chromedriver-linux64/chromedriver" ]; then
+            sudo mv /tmp/chromedriver-linux64/chromedriver /usr/local/bin/
+          elif [ -f "/tmp/chromedriver" ]; then
+            sudo mv /tmp/chromedriver /usr/local/bin/
+          else
+            # Search for it
+            CHROMEDRIVER_BIN=$(find /tmp -name "chromedriver" -type f | head -1)
+            if [ -n "$CHROMEDRIVER_BIN" ]; then
+              sudo mv "$CHROMEDRIVER_BIN" /usr/local/bin/chromedriver
+            else
+              echo "ERROR: Could not find chromedriver binary in extracted files"
+              ls -la /tmp/
+              exit 1
+            fi
+          fi
+          
           sudo chmod +x /usr/local/bin/chromedriver
           
           # Clean up
-          rm -rf /tmp/chromedriver.zip /tmp/chromedriver-linux64
+          rm -rf /tmp/chromedriver.zip /tmp/chromedriver-linux64 2>/dev/null || true
           
           echo "ChromeDriver installed:"
-          chromedriver --version
+          /usr/local/bin/chromedriver --version
 
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install \
             selenium==4.15.2 \
-            webdriver-manager==4.0.1 \
             pandas==2.1.4 \
             beautifulsoup4==4.12.3 \
             lxml==4.9.4
 
-      - name: Verify Chrome Setup
+      - name: Verify Setup
         run: |
-          echo "=== System Verification ==="
+          echo "=== Final Verification ==="
           echo "Chrome: $(which google-chrome)"
           google-chrome --version
           echo ""
@@ -134,33 +203,31 @@ jobs:
           chromedriver --version
           echo ""
           
-          echo "=== Python Selenium Test ==="
+          # Check version compatibility
+          CHROME_MAJOR=$(google-chrome --version | grep -oP '\d+' | head -1)
+          CHROMEDRIVER_MAJOR=$(chromedriver --version | grep -oP '\d+' | head -1)
+          
+          if [ "$CHROME_MAJOR" = "$CHROMEDRIVER_MAJOR" ]; then
+            echo "✓ Version match: Chrome $CHROME_MAJOR = ChromeDriver $CHROMEDRIVER_MAJOR"
+          else
+            echo "⚠ Version mismatch: Chrome $CHROME_MAJOR ≠ ChromeDriver $CHROMEDRIVER_MAJOR"
+            echo "This might cause issues."
+          fi
+          
+          echo ""
+          echo "=== Quick Selenium Test ==="
           python -c "
-          from selenium import webdriver
-          from selenium.webdriver.chrome.options import Options
-          from selenium.webdriver.chrome.service import Service
-          
-          print('Testing Selenium setup...')
-          
-          options = Options()
-          options.add_argument('--headless=new')
-          options.add_argument('--no-sandbox')
-          options.add_argument('--disable-dev-shm-usage')
-          
-          # Use the system ChromeDriver we installed
-          service = Service('/usr/local/bin/chromedriver')
-          
+          import sys
+          print('Python version:', sys.version)
+          print('Testing imports...')
           try:
-              driver = webdriver.Chrome(service=service, options=options)
-              driver.get('https://www.google.com')
-              print(f'✓ Success! Page title: {driver.title}')
-              print(f'✓ Page size: {len(driver.page_source)} characters')
-              driver.quit()
-              print('✓ Test completed successfully')
+              from selenium import webdriver
+              from selenium.webdriver.chrome.options import Options
+              from selenium.webdriver.chrome.service import Service
+              print('✓ Selenium imports successful')
           except Exception as e:
-              print(f'✗ Error: {e}')
-              import traceback
-              traceback.print_exc()
+              print(f'✗ Import error: {e}')
+              sys.exit(1)
           "
 
       - name: Run scraper
@@ -171,14 +238,16 @@ jobs:
           MAX_URLS_PER_SITEMAP: ${{ github.event.inputs.urls_per_sitemap }}
           MAX_WORKERS: ${{ github.event.inputs.max_workers }}
         run: |
-          echo "Starting scraper with configuration:"
+          echo "=== Starting Scraper ==="
+          echo "Configuration:"
           echo "  Base URL: $CURR_URL"
           echo "  Sitemap offset: $SITEMAP_OFFSET"
-          echo "  Max sitemaps per job: $MAX_SITEMAPS"
+          echo "  Max sitemaps: $MAX_SITEMAPS"
           echo "  Max URLs per sitemap: $MAX_URLS_PER_SITEMAP"
           echo "  Parallel workers: $MAX_WORKERS"
           echo ""
           
+          # Run the scraper
           python main.py
 
       - name: Upload chunk
@@ -198,53 +267,40 @@ jobs:
 
       - name: Merge CSVs
         run: |
-          echo "Merging CSV chunks..."
+          echo "=== Merging CSV Files ==="
           
-          # Create empty file with header
+          # Create header
           echo "Ref Product URL,Ref Product ID,Ref Varient ID,Ref Category,Ref Category URL,Ref Brand Name,Ref Product Name,Ref SKU,Ref MPN,Ref GTIN,Ref Price,Ref Main Image,Ref Quantity,Ref Group Attr 1,Ref Group Attr 2,Ref Status,Date Scrapped" > cymax_full.csv
           
-          # Find and merge all CSV files
-          find chunks -name "*.csv" -type f | while read file; do
-            echo "Processing: $file"
-            # Skip header and append content
-            tail -n +2 "$file" >> cymax_full.csv 2>/dev/null || true
+          # Count and merge
+          COUNT=0
+          for file in $(find chunks -name "cymax_chunk_*.csv" -type f); do
+            ROWS=$(( $(wc -l < "$file") - 1 ))
+            if [ $ROWS -gt 0 ]; then
+              tail -n +2 "$file" >> cymax_full.csv
+              COUNT=$((COUNT + ROWS))
+              echo "  Added $ROWS rows from $(basename $file)"
+            fi
           done
           
-          # Count rows (excluding header)
-          ROW_COUNT=$(( $(wc -l < cymax_full.csv) - 1 ))
-          echo "Merged $ROW_COUNT rows into cymax_full.csv"
+          echo ""
+          echo "✓ Merged $COUNT total rows into cymax_full.csv"
 
       - name: Upload final CSV
         uses: actions/upload-artifact@v4
         with:
           name: cymax_complete_dataset
           path: cymax_full.csv
-          retention-days: 7
 
-      - name: Upload to FTP
-        if: success()
-        env:
-          FTP_HOST: ${{ secrets.FTP_HOST }}
-          FTP_USER: ${{ secrets.FTP_USER }}
-          FTP_PASS: ${{ secrets.FTP_PASS }}
-          FTP_BASE_DIR: ${{ secrets.FTP_PATH }}
+      - name: Show Results
         run: |
-          sudo apt-get update && sudo apt-get install -y lftp
-          
-          # Create filename with date
-          SITE=$(echo "${{ github.event.inputs.url }}" | sed -E 's|https?://||;s|[/:]|-|g')
-          DATE=$(date +%Y%m%d_%H%M%S)
-          FILENAME="cymax_${SITE}_${DATE}.csv"
-          
-          echo "Uploading to FTP as: $FILENAME"
-          
-          lftp -u "$FTP_USER","$FTP_PASS" "$FTP_HOST" <<EOF
-          set ssl:verify-certificate no
-          mkdir -p $FTP_BASE_DIR
-          cd $FTP_BASE_DIR
-          put cymax_full.csv -o $FILENAME
-          ls -la
-          bye
-          EOF
-          
-          echo "FTP upload completed: $FILENAME"
+          echo "=== Scraping Results ==="
+          if [ -f cymax_full.csv ]; then
+            ROWS=$(( $(wc -l < cymax_full.csv) - 1 ))
+            echo "Total products scraped: $ROWS"
+            echo ""
+            echo "First few products:"
+            head -5 cymax_full.csv | column -t -s, | head -6
+          else
+            echo "No output CSV generated"
+          fi
