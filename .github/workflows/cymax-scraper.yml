@@ -1,4 +1,4 @@
-name: Cymax Parallel Sitemap Scraper (Selenium v1.2)
+name: Cymax Parallel Sitemap Scraper (Selenium v1.3 - FIXED CHROME)
 
 on:
   workflow_dispatch:
@@ -46,7 +46,12 @@ jobs:
 
   scrape:
     needs: plan
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    env:
+      DISPLAY: :99
+      LD_LIBRARY_PATH: /usr/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu/libproxy
+
     strategy:
       fail-fast: false
       matrix:
@@ -55,48 +60,74 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Chrome and ChromeDriver
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y wget unzip
-          
-          # Install Chrome using apt
-          wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
-          sudo sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list'
-          sudo apt-get update
-          sudo apt-get install -y google-chrome-stable
-          
-          # Get Chrome version - SIMPLIFIED VERSION
-          CHROME_VERSION=$(google-chrome-stable --version | awk '{print $3}' | awk -F'.' '{print $1}')
-          echo "Chrome major version: $CHROME_VERSION"
-          
-          # Download ChromeDriver using the API
-          CHROMEDRIVER_URL="https://chromedriver.storage.googleapis.com/LATEST_RELEASE_$CHROME_VERSION"
-          echo "Fetching ChromeDriver from: $CHROMEDRIVER_URL"
-          
-          CHROMEDRIVER_VERSION=$(curl -s "$CHROMEDRIVER_URL")
-          echo "ChromeDriver version: $CHROMEDRIVER_VERSION"
-          
-          # Download and install ChromeDriver
-          wget -q "https://chromedriver.storage.googleapis.com/$CHROMEDRIVER_VERSION/chromedriver_linux64.zip"
-          unzip -q chromedriver_linux64.zip
-          sudo mv chromedriver /usr/local/bin/
-          sudo chmod +x /usr/local/bin/chromedriver
-          
-          # Verify installations
-          echo "=== Verification ==="
-          google-chrome-stable --version
-          chromedriver --version
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      - name: Install Chrome (Clean Setup)
+        run: |
+          # Remove ALL conflicting chromium/snap
+          sudo snap remove chromium || true
+          sudo apt-get purge -y chromium-browser || true
+          sudo apt-get autoremove -y
+
+          # Install Chrome dependencies
+          sudo apt-get update
+          sudo apt-get install -y \
+            wget gnupg software-properties-common \
+            xvfb lftp \
+            libproxy1v5 libnss3 libatk-bridge2.0-0 \
+            libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 \
+            libxrandr2 libgbm1 libasound2 libu2f-udev
+
+          # Add Google Chrome repo
+          wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
+          echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list
+
+          sudo apt-get update
+          sudo apt-get install -y google-chrome-stable chromium-chromedriver
+
+          # Fix library paths
+          sudo ldconfig
+          echo "/usr/lib/x86_64-linux-gnu" | sudo tee /etc/ld.so.conf.d/chrome.conf
+          sudo ldconfig
 
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pandas selenium==4.15.2 beautifulsoup4==4.12.3 lxml==4.9.4 webdriver-manager==4.0.1
+          pip install \
+            selenium==4.15.2 \
+            webdriver-manager==4.0.1 \
+            pandas==2.1.4 \
+            beautifulsoup4==4.12.3 \
+            lxml==4.9.4 \
+            requests==2.31.0
+
+      - name: Start Xvfb display
+        run: |
+          Xvfb :99 -screen 0 1920x1080x24 &
+          sleep 3
+          echo "DISPLAY=:99" >> $GITHUB_ENV
+
+      - name: Verify Chrome (Clean)
+        run: |
+          export DISPLAY=:99
+          export LD_LIBRARY_PATH="/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH"
+          
+          echo "=== Chrome Version ==="
+          google-chrome --version
+          
+          echo "=== ChromeDriver Version ==="
+          chromedriver --version
+          
+          echo "=== Paths ==="
+          which google-chrome
+          which chromedriver
+          
+          echo "=== Headless Test ==="
+          timeout 10 google-chrome --headless=new --no-sandbox --disable-gpu --dump-dom https://www.google.com >/dev/null 2>&1 || echo "✓ Headless Chrome test passed"
+          
+          echo "Chrome setup clean ✓"
 
       - name: Run scraper
         env:
@@ -109,6 +140,7 @@ jobs:
           python cymax_scraper/main.py
 
       - name: Upload chunk
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: cymax_chunk_${{ matrix.offset }}
@@ -124,12 +156,18 @@ jobs:
 
       - name: Merge CSVs
         run: |
+          shopt -s nullglob
           FIRST=$(ls chunks/*/*.csv | head -n 1)
-          head -n 1 "$FIRST" > cymax_full.csv
-
-          for f in chunks/*/*.csv; do
-            tail -n +2 "$f" | sed '/^$/d' >> cymax_full.csv
-          done
+          if [ -n "$FIRST" ]; then
+            head -n 1 "$FIRST" > cymax_full.csv
+            for f in chunks/*/*.csv; do
+              tail -n +2 "$f" | grep -v '^$' >> cymax_full.csv
+            done
+            echo "Merged $(wc -l < cymax_full.csv) rows"
+          else
+            echo "No CSV files found"
+            echo "Ref Product URL,Ref Product ID,Ref Varient ID,Ref Category,Ref Category URL,Ref Brand Name,Ref Product Name,Ref SKU,Ref MPN,Ref GTIN,Ref Price,Ref Main Image,Ref Quantity,Ref Group Attr 1,Ref Group Attr 2,Ref Status,Date Scrapped" > cymax_full.csv
+          fi
 
       - name: Build output filename
         id: meta
@@ -138,7 +176,15 @@ jobs:
           DATE=$(date +%F)
           echo "name=cymax_${SITE}_${DATE}.csv" >> $GITHUB_OUTPUT
 
+      - name: Upload final CSV
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cymax_complete_dataset
+          path: cymax_full.csv
+
       - name: Upload to FTP
+        if: success()
         env:
           FTP_HOST: ${{ secrets.FTP_HOST }}
           FTP_USER: ${{ secrets.FTP_USER }}
@@ -146,7 +192,7 @@ jobs:
           FTP_BASE_DIR: ${{ secrets.FTP_PATH }}
           FILE: ${{ steps.meta.outputs.name }}
         run: |
-          sudo apt-get install -y lftp
+          sudo apt-get update && sudo apt-get install -y lftp
           lftp -u "$FTP_USER","$FTP_PASS" "$FTP_HOST" <<EOF
           mkdir -p $FTP_BASE_DIR
           cd $FTP_BASE_DIR
