@@ -8,24 +8,12 @@
     "min_name_length": 10
   },
   "delays": {
-    "human_delay_min": 6.0,
-    "human_delay_max": 16.0,
-    "inter_request_delay": 0.1
+    "human_delay_min": 8,
+    "human_delay_max": 18,
+    "inter_request_delay": 8
   },
   "sitemap": {
     "urls": [
-      "https://www.cymax.com/sitemap1.xml",
-      "https://www.cymax.com/sitemap2.xml",
-      "https://www.cymax.com/sitemap3.xml",
-      "https://www.cymax.com/sitemap4.xml",
-      "https://www.cymax.com/sitemap5.xml",
-      "https://www.cymax.com/sitemap6.xml",
-      "https://www.cymax.com/sitemap7.xml",
-      "https://www.cymax.com/sitemap8.xml",
-      "https://www.cymax.com/sitemap9.xml",
-      "https://www.cymax.com/sitemap10.xml",
-      "https://www.cymax.com/sitemap11.xml",
-      "https://www.cymax.com/sitemap12.xml",
       "https://www.cymax.com/sitemap13.xml"
     ]
   }
