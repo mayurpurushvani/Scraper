@@ -1,15 +1,15 @@
 {
   "scraping": {
     "retry_attempts": 2,
-    "min_html_size": 8000,
+    "min_html_size": 20000,
     "sitemap_limit": 40000
   },
   "product_validation": {
     "min_name_length": 10
   },
   "delays": {
-    "human_delay_min": 1.0,
-    "human_delay_max": 2.0,
+    "human_delay_min": 6.0,
+    "human_delay_max": 16.0,
     "inter_request_delay": 0.1
   },
   "sitemap": {
