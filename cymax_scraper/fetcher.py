@@ -29,32 +29,37 @@ class Fetcher:
 
     def _create_fresh_browser(self):
         options = Options()
-
-        temp_dir = tempfile.mkdtemp(prefix="chrome_")
-        options.add_argument(f"--user-data-dir={temp_dir}")
-
-        options.add_argument("--start-maximized")
-        options.add_argument("--disable-blink-features=AutomationControlled")
-        options.add_argument("--disable-dev-shm-usage")
+        
+        options.add_argument("--headless=new")
         options.add_argument("--no-sandbox")
-        options.add_argument("--disable-extensions")
-
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--window-size=1920,1080")
+        
+        options.add_argument("--disable-blink-features=AutomationControlled")
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option("useAutomationExtension", False)
-
-        chromedriver_path = shutil.which("chromedriver")
-        service = Service(chromedriver_path)
-
-        driver = webdriver.Chrome(service=service, options=options)
-
+        
+        try:
+            from selenium.webdriver.chrome.service import Service
+            from webdriver_manager.chrome import ChromeDriverManager
+            
+            service = Service(ChromeDriverManager().install())
+            driver = webdriver.Chrome(service=service, options=options)
+        except Exception as e:
+            log(f"Error with webdriver-manager: {e}")
+            chromedriver_path = shutil.which("chromedriver")
+            if not chromedriver_path:
+                chromedriver_path = "/usr/bin/chromedriver"
+            service = Service(chromedriver_path)
+            driver = webdriver.Chrome(service=service, options=options)
+        
         driver.execute_script("""
             Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
             Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
             Object.defineProperty(navigator, 'languages', {get: () => ['en-US','en']});
-            window.chrome = { runtime: {} };
-        """)
+        """)       
         return driver
-
 
     def fetch(self, url: str, retries=None) -> str:
         if retries is None:
@@ -65,35 +70,50 @@ class Fetcher:
         for attempt in range(1, retries + 1):
             driver = None
             try:
+                log(f"[{attempt}/{retries}] Creating browser for: {url}")
                 driver = self._create_fresh_browser()
-                print(driver)
-                log(f"[{attempt}/{retries}] Fresh browser for: {url}")
                 
+                driver.set_page_load_timeout(30)
+                
+                log(f"[{attempt}/{retries}] Navigating to: {url}")
                 driver.get(url)
-                time.sleep(random.uniform(
-                    config['delays']['human_delay_min'], 
-                    config['delays']['human_delay_max']
-                ))
+                
+                time.sleep(random.uniform(2, 4))
+                
+                if "Checking your browser" in driver.page_source:
+                    log(f"[{attempt}/{retries}] Cloudflare challenge detected")
+                    time.sleep(5)
+                    driver.refresh()
+                    time.sleep(random.uniform(2, 4))
                 
                 html = driver.page_source
-                log(f"[{attempt}/{retries}] Page size: {len(html)//1000}KB for {url}")
                 
-                blocks = ["sorry, you have been blocked", "cloudflare ray id", "checking your browser"]
-                if any(block in html.lower() for block in blocks):
+                block_indicators = [
+                    "sorry, you have been blocked",
+                    "cloudflare ray id",
+                    "checking your browser",
+                    "access denied",
+                    "security check"
+                ]
+                
+                html_lower = html.lower()
+                if any(indicator in html_lower for indicator in block_indicators):
                     log(f"[{attempt}/{retries}] BLOCKED: {url}")
                     if driver:
                         driver.quit()
                     continue
                 
                 if len(html) > config['scraping']['min_html_size']:
-                    print(len(html))
                     log(f"[{attempt}/{retries}] SUCCESS ({len(html)//1000}KB): {url}")
+                    driver.quit()
                     return html
                 else:
                     log(f"[{attempt}/{retries}] Too small ({len(html)//1000}KB): {url}")
                 
             except Exception as e:
-                log(f"[{attempt}/{retries}] ERROR ({str(e)[:40]}): {url}")
+                log(f"[{attempt}/{retries}] ERROR: {str(e)}")
+                import traceback
+                log(f"Traceback: {traceback.format_exc()}")
             
             finally:
                 if driver:
@@ -103,8 +123,9 @@ class Fetcher:
                         pass
             
             if attempt < retries:
-                log(f"[{attempt}/{retries}] Retrying in 3s: {url}")
-                time.sleep(3)
+                wait_time = 2 ** attempt
+                log(f"[{attempt}/{retries}] Retrying in {wait_time}s: {url}")
+                time.sleep(wait_time)
         
         log(f"[{retries}x FAILED] {url}")
         return None
