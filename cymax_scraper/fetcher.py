@@ -5,6 +5,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
+import shutil
 import json
 import time
 import random
@@ -28,39 +29,32 @@ class Fetcher:
 
     def _create_fresh_browser(self):
         options = Options()
+
         temp_dir = tempfile.mkdtemp(prefix="chrome_")
+        options.add_argument(f"--user-data-dir={temp_dir}")
+
+        options.add_argument("--start-maximized")
         options.add_argument("--disable-blink-features=AutomationControlled")
-        options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--disable-gpu")
-        options.add_argument("--disable-infobars")
+        options.add_argument("--no-sandbox")
         options.add_argument("--disable-extensions")
-        options.add_argument("--disable-popup-blocking")
-        options.add_argument("--disable-logging")
-        options.add_argument("--log-level=3")
-        options.add_argument("--remote-debugging-port=9222")
-        options.add_argument("--disable-background-timer-throttling")
-        options.add_argument("--disable-backgrounding-occluded-windows")
-        options.add_argument("--disable-ipc-flooding-protection")
-        options.add_argument("--enable-features=NetworkService,NetworkServiceInProcess")
-        options.add_argument("--disable-renderer-backgrounding")
-        options.add_argument("--disable-features=IsolateOrigins,site-per-process")
-        options.add_argument("--disable-site-isolation-trials")
-        chromedriver_path = "/usr/lib/chromium-browser/chromedriver"
+
+        options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        options.add_experimental_option("useAutomationExtension", False)
+
+        chromedriver_path = shutil.which("chromedriver")
         service = Service(chromedriver_path)
-        
-        options.add_argument("--disable-web-security")
-        options.add_argument("--disable-features=VizDisplayCompositor")
-        
+
         driver = webdriver.Chrome(service=service, options=options)
-        
+
         driver.execute_script("""
             Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
             Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
             Object.defineProperty(navigator, 'languages', {get: () => ['en-US','en']});
-            window.chrome = {runtime: {}};
+            window.chrome = { runtime: {} };
         """)
         return driver
+
 
     def fetch(self, url: str, retries=None) -> str:
         if retries is None:
@@ -92,6 +86,7 @@ class Fetcher:
                     continue
                 
                 if len(html) > config['scraping']['min_html_size']:
+                    print(len(html))
                     log(f"[{attempt}/{retries}] SUCCESS ({len(html)//1000}KB): {url}")
                     return html
                 else:
