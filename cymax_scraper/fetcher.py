@@ -1,8 +1,6 @@
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
-from webdriver_manager.core.os_manager import ChromeType
 import json
 import time
 import random
@@ -25,26 +23,26 @@ class Fetcher:
         self.driver = None
 
     def _create_fresh_browser(self):
+        """Create a fresh browser instance optimized for GitHub Actions"""
         options = Options()
 
-        # GitHub Actions specific settings
-        options.add_argument("--headless=new")  # Use new headless mode
-        options.add_argument("--no-sandbox")    # Required for GitHub Actions
+        # Headless mode for GitHub Actions
+        options.add_argument("--headless=new")
+        options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-gpu")
         options.add_argument("--window-size=1920,1080")
         
-        # Anti-detection settings
+        # Anti-detection
         options.add_argument("--disable-blink-features=AutomationControlled")
         options.add_argument("--disable-infobars")
         options.add_argument("--disable-extensions")
-        options.add_argument("--disable-notifications")
         
-        # User agent rotation
+        # Random user agent
         user_agents = [
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36"
         ]
         options.add_argument(f"user-agent={random.choice(user_agents)}")
         
@@ -52,135 +50,89 @@ class Fetcher:
         options.add_experimental_option("useAutomationExtension", False)
 
         try:
-            # Use webdriver-manager to automatically handle ChromeDriver
-            log("Installing ChromeDriver via webdriver-manager...")
-            service = Service(ChromeDriverManager(chrome_type=ChromeType.GOOGLE).install())
+            # Use the ChromeDriver installed in the workflow
+            service = Service('/usr/local/bin/chromedriver')
             driver = webdriver.Chrome(service=service, options=options)
             
-        except Exception as e:
-            log(f"Error with webdriver-manager: {e}")
-            # Fallback: try to find Chrome and chromedriver in system
-            try:
-                # Set Chrome binary location
-                chrome_paths = [
-                    "/usr/bin/google-chrome-stable",
-                    "/usr/bin/google-chrome",
-                    "/usr/bin/chromium-browser",
-                    "/opt/chrome/chrome"
-                ]
-                
-                for path in chrome_paths:
-                    if os.path.exists(path):
-                        options.binary_location = path
-                        break
-                
-                # Set ChromeDriver path
-                chromedriver_paths = [
-                    "/usr/local/bin/chromedriver",
-                    "/usr/bin/chromedriver",
-                    "/usr/lib/chromium-browser/chromedriver"
-                ]
-                
-                chromedriver_path = None
-                for path in chromedriver_paths:
-                    if os.path.exists(path):
-                        chromedriver_path = path
-                        break
-                
-                if chromedriver_path:
-                    service = Service(chromedriver_path)
-                    driver = webdriver.Chrome(service=service, options=options)
-                else:
-                    # Last resort: let Selenium find it
-                    driver = webdriver.Chrome(options=options)
-                    
-            except Exception as e2:
-                log(f"All fallbacks failed: {e2}")
-                raise Exception(f"Cannot create browser: {e2}")
-
-        # Execute anti-detection scripts
-        try:
-            driver.execute_cdp_cmd('Network.setUserAgentOverride', {
-                "userAgent": random.choice(user_agents),
-                "platform": "Linux"
-            })
-            
+            # Execute anti-detection scripts
             driver.execute_script("""
                 Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
                 Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
                 Object.defineProperty(navigator, 'languages', {get: () => ['en-US','en']});
             """)
-        except:
-            pass  # Ignore if CDP commands fail
-
-        return driver
+            
+            log("✓ Browser created successfully")
+            return driver
+            
+        except Exception as e:
+            log(f"Error creating browser: {e}")
+            
+            # Fallback: try without service
+            try:
+                driver = webdriver.Chrome(options=options)
+                log("✓ Browser created with fallback method")
+                return driver
+            except Exception as e2:
+                log(f"Fallback also failed: {e2}")
+                raise
 
     def fetch(self, url: str, retries=None) -> str:
+        """Fetch HTML content from URL with retry logic"""
         if retries is None:
             retries = config['scraping']['retry_attempts']
         
-        log(f"[{retries} retries] Target: {url}")
+        log(f"Fetching: {url} (max {retries} retries)")
         
         for attempt in range(1, retries + 1):
             driver = None
             try:
-                log(f"[{attempt}/{retries}] Creating browser for: {url}")
+                log(f"[{attempt}/{retries}] Creating browser...")
                 driver = self._create_fresh_browser()
                 
-                # Set timeouts
+                # Set reasonable timeouts
                 driver.set_page_load_timeout(30)
-                driver.set_script_timeout(30)
+                driver.set_script_timeout(20)
                 
-                log(f"[{attempt}/{retries}] Navigating to: {url}")
+                log(f"[{attempt}/{retries}] Loading: {url}")
                 driver.get(url)
                 
-                # Add human-like delays
-                time.sleep(random.uniform(3, 5))
+                # Random delay to appear human
+                delay = random.uniform(
+                    config['delays']['human_delay_min'],
+                    config['delays']['human_delay_max']
+                )
+                time.sleep(delay)
                 
-                # Scroll a bit to trigger lazy loading
-                driver.execute_script("window.scrollTo(0, document.body.scrollHeight / 3);")
-                time.sleep(random.uniform(1, 2))
+                # Scroll to trigger lazy loading
+                driver.execute_script("window.scrollTo(0, document.body.scrollHeight / 2);")
+                time.sleep(1)
                 
                 html = driver.page_source
                 
-                # Better block detection
-                block_indicators = [
+                # Check for blocks
+                if any(block in html.lower() for block in [
                     "sorry, you have been blocked",
                     "cloudflare ray id",
                     "checking your browser",
-                    "access denied",
-                    "security check",
-                    "captcha",
-                    "distil",
-                    "incapsula",
-                    "shield"
-                ]
+                    "access denied"
+                ]):
+                    log(f"[{attempt}/{retries}] Block detected")
+                    raise Exception("Blocked by website")
                 
-                html_lower = html.lower()
-                if any(indicator in html_lower for indicator in block_indicators):
-                    log(f"[{attempt}/{retries}] BLOCKED: {url}")
-                    if driver:
-                        driver.quit()
-                    continue
-                
-                # Check if it's a listing page (not a product page)
+                # Check if it's a product page
                 if 'id="products-list-page"' in html or 'class="product-list"' in html:
-                    log(f"[{attempt}/{retries}] Listing page detected: {url}")
-                    if driver:
-                        driver.quit()
+                    log(f"[{attempt}/{retries}] Listing page, skipping")
                     return None
                 
                 if len(html) > config['scraping']['min_html_size']:
-                    log(f"[{attempt}/{retries}] SUCCESS ({len(html)//1000}KB): {url}")
-                    driver.quit()
+                    log(f"[{attempt}/{retries}] Success ({len(html)//1000}KB)")
                     return html
                 else:
-                    log(f"[{attempt}/{retries}] Too small ({len(html)//1000}KB): {url}")
-                
+                    log(f"[{attempt}/{retries}] HTML too small ({len(html)//1000}KB)")
+                    
             except Exception as e:
-                log(f"[{attempt}/{retries}] ERROR: {str(e)}")
-                log(f"Traceback: {traceback.format_exc()}")
-            
+                log(f"[{attempt}/{retries}] Error: {str(e)[:80]}")
+                
             finally:
                 if driver:
                     try:
@@ -188,14 +140,15 @@ class Fetcher:
                     except:
                         pass
             
-            # Exponential backoff for retries
+            # Wait before retry (exponential backoff)
             if attempt < retries:
-                wait_time = 2 ** attempt  # 2, 4, 8, etc.
-                log(f"[{attempt}/{retries}] Retrying in {wait_time}s: {url}")
+                wait_time = min(2 ** attempt, 30)  # Cap at 30 seconds
+                log(f"[{attempt}/{retries}] Retrying in {wait_time}s...")
                 time.sleep(wait_time)
         
-        log(f"[{retries}x FAILED] {url}")
+        log(f"Failed after {retries} attempts: {url}")
         return None
 
     def close(self):
+        """Clean up resources"""
         pass
