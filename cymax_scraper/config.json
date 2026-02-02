@@ -1,6 +1,6 @@
 {
   "scraping": {
-    "retry_attempts": 2,
+    "retry_attempts": 3,
     "min_html_size": 20000,
     "sitemap_limit": 40000
   },

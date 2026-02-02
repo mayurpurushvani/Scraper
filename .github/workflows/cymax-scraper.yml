@@ -1,4 +1,4 @@
-name: Cymax Parallel Sitemap Scraper (Selenium v1.3)
+name: Cymax Parallel Sitemap Scraper (Selenium v2.0)
 
 on:
   workflow_dispatch:
@@ -18,7 +18,7 @@ on:
         default: "500"
       max_workers:
         description: "Parallel browsers per job"
-        default: "3"
+        default: "2"
 
 jobs:
   plan:
@@ -50,7 +50,7 @@ jobs:
     timeout-minutes: 120
     env:
       DISPLAY: :99
-      LD_LIBRARY_PATH: /usr/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu/libproxy
+      LD_LIBRARY_PATH: /usr/lib/x86_64-linux-gnu
 
     strategy:
       fail-fast: false
@@ -64,42 +64,18 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install Chrome & Dependencies
+      - name: Install Chrome Dependencies
         run: |
-          # Install Chrome dependencies
           sudo apt-get update
           sudo apt-get install -y \
-            wget gnupg \
-            ca-certificates \
-            libnss3 \
-            libatk1.0-0 \
-            libatk-bridge2.0-0 \
-            libcups2 \
-            libdrm2 \
-            libdbus-1-3 \
-            libxkbcommon0 \
-            libxcomposite1 \
-            libxdamage1 \
-            libxrandr2 \
-            libgbm1 \
-            libasound2 \
-            libpangocairo-1.0-0 \
-            libpango-1.0-0 \
-            libcairo2 \
-            libgdk-pixbuf2.0-0
-
-          # Download and install Chrome
-          wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
-          sudo apt-get install -y ./google-chrome-stable_current_amd64.deb
-          rm google-chrome-stable_current_amd64.deb
-
-          # Install ChromeDriver
-          CHROME_VERSION=$(google-chrome --version | awk '{print $3}' | cut -d'.' -f1)
-          wget -q "https://storage.googleapis.com/chrome-for-testing-public/$CHROME_VERSION.0.0/linux64/chromedriver-linux64.zip"
-          unzip -q chromedriver-linux64.zip
-          sudo mv chromedriver-linux64/chromedriver /usr/local/bin/
-          chmod +x /usr/local/bin/chromedriver
-          rm -rf chromedriver-linux64.zip chromedriver-linux64
+            wget gnupg ca-certificates \
+            xvfb lftp \
+            libnss3 libatk1.0-0 libatk-bridge2.0-0 \
+            libcups2 libdrm2 libxkbcommon0 \
+            libxcomposite1 libxdamage1 libxrandr2 \
+            libgbm1 libasound2 libpangocairo-1.0-0 \
+            libpango-1.0-0 libcairo2 libgdk-pixbuf2.0-0 \
+            libdbus-1-3 libu2f-udev libproxy1v5
 
       - name: Install Python dependencies
         run: |
@@ -118,25 +94,38 @@ jobs:
           sleep 3
           echo "DISPLAY=:99" >> $GITHUB_ENV
 
-      - name: Verify Chrome (Clean)
+      - name: Test Selenium Setup
         run: |
           export DISPLAY=:99
-          export LD_LIBRARY_PATH="/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH"
+          python -c "
+          from selenium import webdriver
+          from selenium.webdriver.chrome.options import Options
+          from selenium.webdriver.chrome.service import Service
+          from webdriver_manager.chrome import ChromeDriverManager
           
-          echo "=== Chrome Version ==="
-          google-chrome --version
+          print('Testing Selenium setup...')
           
-          echo "=== ChromeDriver Version ==="
-          chromedriver --version
+          options = Options()
+          options.add_argument('--headless=new')
+          options.add_argument('--no-sandbox')
+          options.add_argument('--disable-dev-shm-usage')
           
-          echo "=== Paths ==="
-          which google-chrome
-          which chromedriver
-          
-          echo "=== Headless Test ==="
-          timeout 10 google-chrome --headless=new --no-sandbox --disable-gpu --dump-dom https://www.google.com >/dev/null 2>&1 || echo "✓ Headless Chrome test passed"
-          
-          echo "Chrome setup clean ✓"
+          try:
+              service = Service(ChromeDriverManager().install())
+              driver = webdriver.Chrome(service=service, options=options)
+              
+              driver.get('https://www.google.com')
+              print(f'✓ Chrome test successful: {driver.title}')
+              print(f'✓ Page size: {len(driver.page_source)} characters')
+              
+              driver.quit()
+              print('✓ Driver cleanup successful')
+              
+          except Exception as e:
+              print(f'✗ Error: {e}')
+              import traceback
+              traceback.print_exc()
+          "
 
       - name: Run scraper
         env:
@@ -146,7 +135,14 @@ jobs:
           MAX_URLS_PER_SITEMAP: ${{ github.event.inputs.urls_per_sitemap }}
           MAX_WORKERS: ${{ github.event.inputs.max_workers }}
         run: |
-          python cymax_scraper/main.py
+          echo "Starting scraper with:"
+          echo "  CURR_URL: $CURR_URL"
+          echo "  SITEMAP_OFFSET: $SITEMAP_OFFSET"
+          echo "  MAX_SITEMAPS: $MAX_SITEMAPS"
+          echo "  MAX_URLS_PER_SITEMAP: $MAX_URLS_PER_SITEMAP"
+          echo "  MAX_WORKERS: $MAX_WORKERS"
+          
+          python main.py
 
       - name: Upload chunk
         if: always()

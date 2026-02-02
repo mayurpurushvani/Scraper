@@ -1,16 +1,13 @@
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
-import shutil
+from webdriver_manager.core.os_manager import ChromeType
 import json
 import time
 import random
-import tempfile
 import os
+import traceback
 
 def load_config():
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -23,119 +20,99 @@ config = load_config()
 def log(msg):
     print(f"[FETCHER] {msg}")
 
-PROXY_LIST = [
-    "202.133.88.173:80",
-    "213.142.156.97:80",
-    "138.68.60.8:8080",
-    "91.98.78.64:80",
-    "212.47.232.28:80",
-    "38.248.248.61:10002",
-    "188.239.43.6:80",
-    "50.203.147.152:80",
-    "181.143.104.84:3000"
-]
-
-def create_proxy_extension(proxy_host, proxy_port):
-    manifest_json = """
-    {
-        "version": "1.0.0",
-        "manifest_version": 2,
-        "name": "Chrome Proxy",
-        "permissions": [
-            "proxy",
-            "tabs",
-            "unlimitedStorage",
-            "storage",
-            "<all_urls>",
-            "webRequest",
-            "webRequestBlocking"
-        ],
-        "background": {
-            "scripts": ["background.js"],
-            "persistent": false
-        },
-        "minimum_chrome_version": "22.0.0"
-    }
-    """
-    background_js = f"""
-    var config = {{
-        mode: "fixed_servers",
-        rules: {{
-            singleProxy: {{
-                scheme: "http",
-                host: "{proxy_host}",
-                port: parseInt({proxy_port})
-            }},
-            bypassList: ["localhost"]
-        }}
-    }};
-
-    chrome.proxy.settings.set({{value: config, scope: "regular"}}, function() {{}});
-
-    chrome.webRequest.onAuthRequired.addListener(
-        function() {{
-            return {{cancel: false}};
-        }},
-        {{urls: ["<all_urls>"]}},
-        ['blocking']
-    );
-    """
-
-    extension_dir = tempfile.mkdtemp(prefix="proxy_ext_")
-    
-    with open(os.path.join(extension_dir, 'manifest.json'), 'w') as f:
-        f.write(manifest_json)
-    
-    with open(os.path.join(extension_dir, 'background.js'), 'w') as f:
-        f.write(background_js)
-    
-    return extension_dir
-
 class Fetcher:
     def __init__(self):
-        self.proxy_list = PROXY_LIST
-        self.proxy_index = 0
-        log(f"Loaded {len(self.proxy_list)} WORKING PROXIES - Ready for Cloudflare bypass!")
-
-    def get_next_proxy(self):
-        proxy = self.proxy_list[self.proxy_index % len(self.proxy_list)]
-        self.proxy_index += 1
-        host, port = proxy.split(':')
-        log(f"Using proxy #{(self.proxy_index-1)%len(self.proxy_list)+1}: {proxy}")
-        return host, int(port)
+        self.driver = None
 
     def _create_fresh_browser(self):
         options = Options()
-        
-        options.add_argument("--headless=new")
-        options.add_argument("--no-sandbox")
+
+        # GitHub Actions specific settings
+        options.add_argument("--headless=new")  # Use new headless mode
+        options.add_argument("--no-sandbox")    # Required for GitHub Actions
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-gpu")
         options.add_argument("--window-size=1920,1080")
         
+        # Anti-detection settings
         options.add_argument("--disable-blink-features=AutomationControlled")
+        options.add_argument("--disable-infobars")
+        options.add_argument("--disable-extensions")
+        options.add_argument("--disable-notifications")
+        
+        # User agent rotation
+        user_agents = [
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        ]
+        options.add_argument(f"user-agent={random.choice(user_agents)}")
+        
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option("useAutomationExtension", False)
-        
+
         try:
-            from selenium.webdriver.chrome.service import Service
-            from webdriver_manager.chrome import ChromeDriverManager
-            
-            service = Service(ChromeDriverManager().install())
+            # Use webdriver-manager to automatically handle ChromeDriver
+            log("Installing ChromeDriver via webdriver-manager...")
+            service = Service(ChromeDriverManager(chrome_type=ChromeType.GOOGLE).install())
             driver = webdriver.Chrome(service=service, options=options)
+            
         except Exception as e:
             log(f"Error with webdriver-manager: {e}")
-            chromedriver_path = shutil.which("chromedriver")
-            if not chromedriver_path:
-                chromedriver_path = "/usr/bin/chromedriver"
-            service = Service(chromedriver_path)
-            driver = webdriver.Chrome(service=service, options=options)
-        
-        driver.execute_script("""
-            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-            Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
-            Object.defineProperty(navigator, 'languages', {get: () => ['en-US','en']});
-        """)       
+            # Fallback: try to find Chrome and chromedriver in system
+            try:
+                # Set Chrome binary location
+                chrome_paths = [
+                    "/usr/bin/google-chrome-stable",
+                    "/usr/bin/google-chrome",
+                    "/usr/bin/chromium-browser",
+                    "/opt/chrome/chrome"
+                ]
+                
+                for path in chrome_paths:
+                    if os.path.exists(path):
+                        options.binary_location = path
+                        break
+                
+                # Set ChromeDriver path
+                chromedriver_paths = [
+                    "/usr/local/bin/chromedriver",
+                    "/usr/bin/chromedriver",
+                    "/usr/lib/chromium-browser/chromedriver"
+                ]
+                
+                chromedriver_path = None
+                for path in chromedriver_paths:
+                    if os.path.exists(path):
+                        chromedriver_path = path
+                        break
+                
+                if chromedriver_path:
+                    service = Service(chromedriver_path)
+                    driver = webdriver.Chrome(service=service, options=options)
+                else:
+                    # Last resort: let Selenium find it
+                    driver = webdriver.Chrome(options=options)
+                    
+            except Exception as e2:
+                log(f"All fallbacks failed: {e2}")
+                raise Exception(f"Cannot create browser: {e2}")
+
+        # Execute anti-detection scripts
+        try:
+            driver.execute_cdp_cmd('Network.setUserAgentOverride', {
+                "userAgent": random.choice(user_agents),
+                "platform": "Linux"
+            })
+            
+            driver.execute_script("""
+                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
+                Object.defineProperty(navigator, 'languages', {get: () => ['en-US','en']});
+            """)
+        except:
+            pass  # Ignore if CDP commands fail
+
         return driver
 
     def fetch(self, url: str, retries=None) -> str:
@@ -150,27 +127,33 @@ class Fetcher:
                 log(f"[{attempt}/{retries}] Creating browser for: {url}")
                 driver = self._create_fresh_browser()
                 
+                # Set timeouts
                 driver.set_page_load_timeout(30)
+                driver.set_script_timeout(30)
                 
                 log(f"[{attempt}/{retries}] Navigating to: {url}")
                 driver.get(url)
                 
-                time.sleep(random.uniform(2, 4))
+                # Add human-like delays
+                time.sleep(random.uniform(3, 5))
                 
-                if "Checking your browser" in driver.page_source:
-                    log(f"[{attempt}/{retries}] Cloudflare challenge detected")
-                    time.sleep(5)
-                    driver.refresh()
-                    time.sleep(random.uniform(2, 4))
+                # Scroll a bit to trigger lazy loading
+                driver.execute_script("window.scrollTo(0, document.body.scrollHeight / 3);")
+                time.sleep(random.uniform(1, 2))
                 
                 html = driver.page_source
                 
+                # Better block detection
                 block_indicators = [
                     "sorry, you have been blocked",
                     "cloudflare ray id",
                     "checking your browser",
                     "access denied",
-                    "security check"
+                    "security check",
+                    "captcha",
+                    "distil",
+                    "incapsula",
+                    "shield"
                 ]
                 
                 html_lower = html.lower()
@@ -179,6 +162,13 @@ class Fetcher:
                     if driver:
                         driver.quit()
                     continue
+                
+                # Check if it's a listing page (not a product page)
+                if 'id="products-list-page"' in html or 'class="product-list"' in html:
+                    log(f"[{attempt}/{retries}] Listing page detected: {url}")
+                    if driver:
+                        driver.quit()
+                    return None
                 
                 if len(html) > config['scraping']['min_html_size']:
                     log(f"[{attempt}/{retries}] SUCCESS ({len(html)//1000}KB): {url}")
@@ -189,7 +179,6 @@ class Fetcher:
                 
             except Exception as e:
                 log(f"[{attempt}/{retries}] ERROR: {str(e)}")
-                import traceback
                 log(f"Traceback: {traceback.format_exc()}")
             
             finally:
@@ -199,8 +188,9 @@ class Fetcher:
                     except:
                         pass
             
+            # Exponential backoff for retries
             if attempt < retries:
-                wait_time = 2 ** attempt
+                wait_time = 2 ** attempt  # 2, 4, 8, etc.
                 log(f"[{attempt}/{retries}] Retrying in {wait_time}s: {url}")
                 time.sleep(wait_time)
         
