@@ -1,4 +1,4 @@
-name: Cymax Parallel Sitemap Scraper (Selenium v1.2 - FIXED)
+name: Cymax Parallel Sitemap Scraper (Selenium v1.3)
 
 on:
   workflow_dispatch:
@@ -48,6 +48,9 @@ jobs:
     needs: plan
     runs-on: ubuntu-22.04
     timeout-minutes: 120
+    env:
+      DISPLAY: :99
+      LD_LIBRARY_PATH: /usr/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu/libproxy
 
     strategy:
       fail-fast: false
@@ -61,14 +64,33 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install system dependencies
+      - name: Install Chrome (Clean Setup)
         run: |
+          # Remove ALL conflicting chromium/snap
+          sudo snap remove chromium || true
+          sudo apt-get purge -y chromium-browser || true
+          sudo apt-get autoremove -y
+
+          # Install Chrome dependencies
           sudo apt-get update
           sudo apt-get install -y \
-            google-chrome-stable \
-            chromium-chromedriver \
-            xvfb \
-            lftp
+            wget gnupg software-properties-common \
+            xvfb lftp \
+            libproxy1v5 libnss3 libatk-bridge2.0-0 \
+            libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 \
+            libxrandr2 libgbm1 libasound2 libu2f-udev
+
+          # Add Google Chrome repo
+          wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
+          echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list
+
+          sudo apt-get update
+          sudo apt-get install -y google-chrome-stable chromium-chromedriver
+
+          # Fix library paths
+          sudo ldconfig
+          echo "/usr/lib/x86_64-linux-gnu" | sudo tee /etc/ld.so.conf.d/chrome.conf
+          sudo ldconfig
 
       - name: Install Python dependencies
         run: |
@@ -85,18 +107,30 @@ jobs:
         run: |
           Xvfb :99 -screen 0 1920x1080x24 &
           sleep 3
-          export DISPLAY=:99
+          echo "DISPLAY=:99" >> $GITHUB_ENV
 
-      - name: Verify Chrome versions
+      - name: Verify Chrome (Clean)
         run: |
+          export DISPLAY=:99
+          export LD_LIBRARY_PATH="/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH"
+          
+          echo "=== Chrome Version ==="
           google-chrome --version
+          
+          echo "=== ChromeDriver Version ==="
           chromedriver --version
+          
+          echo "=== Paths ==="
           which google-chrome
           which chromedriver
+          
+          echo "=== Headless Test ==="
+          timeout 10 google-chrome --headless=new --no-sandbox --disable-gpu --dump-dom https://www.google.com >/dev/null 2>&1 || echo "✓ Headless Chrome test passed"
+          
+          echo "Chrome setup clean ✓"
 
       - name: Run scraper
         env:
-          DISPLAY: :99
           CURR_URL: ${{ matrix.url }}
           SITEMAP_OFFSET: ${{ matrix.offset }}
           MAX_SITEMAPS: ${{ matrix.limit }}
