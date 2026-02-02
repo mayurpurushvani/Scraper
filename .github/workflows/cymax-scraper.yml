@@ -1,126 +1,75 @@
-name: Cymax Scraper (Simplified Chrome Setup)
+name: Cymax Product Scraper
 
 on:
   workflow_dispatch:
     inputs:
-      url:
-        description: "Cymax base URL"
-        required: true
-        default: "https://www.cymax.com"
       total_sitemaps:
-        description: "Total sitemaps to process (0 = auto)"
-        default: "0"
-      sitemaps_per_job:
-        description: "Sitemaps per parallel job"
-        default: "2"
+        description: "Total sitemaps to process"
+        default: "1"
       urls_per_sitemap:
         description: "Max URLs per sitemap"
-        default: "200"
+        default: "50"
       max_workers:
-        description: "Parallel browsers per job"
+        description: "Parallel workers"
         default: "2"
 
 jobs:
-  plan:
-    runs-on: ubuntu-latest
-    outputs:
-      matrix: ${{ steps.matrix.outputs.matrix }}
-    steps:
-      - id: matrix
-        run: |
-          TOTAL=${{ github.event.inputs.total_sitemaps }}
-          PER_JOB=${{ github.event.inputs.sitemaps_per_job }}
-          URL=${{ github.event.inputs.url }}
-
-          [ "$TOTAL" -eq 0 ] && TOTAL=3
-          JOBS=$(( (TOTAL + PER_JOB - 1) / PER_JOB ))
-
-          MATRIX="["
-          for ((i=0;i<JOBS;i++)); do
-            OFFSET=$(( i * PER_JOB ))
-            MATRIX+="{\"offset\":$OFFSET,\"limit\":$PER_JOB,\"url\":\"$URL\"},"
-          done
-          MATRIX="${MATRIX%,}]"
-
-          echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
-
   scrape:
-    needs: plan
     runs-on: ubuntu-22.04
     timeout-minutes: 120
-
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJson(needs.plan.outputs.matrix) }}
-
+    
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
-      - name: Install Chrome & ChromeDriver (Complete Package)
-        run: |
-          echo "=== Installing Chrome and ChromeDriver ==="
-          
-          # 1. Install Chrome from Google repository (most reliable)
-          sudo apt-get update
-          sudo apt-get install -y wget gnupg
-          
-          # Add Google Chrome repository
-          wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
-          echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list
-          
-          sudo apt-get update
-          sudo apt-get install -y google-chrome-stable
-          
-          echo "Chrome installed:"
-          google-chrome --version
-          
-          # 2. Get Chrome version
-          CHROME_VERSION=$(google-chrome --version | grep -oP '\d+\.\d+\.\d+\.\d+')
-          echo "Chrome version: $CHROME_VERSION"
-          
-          # 3. Install matching ChromeDriver using webdriver-manager via Python
-          echo "Installing ChromeDriver..."
-          python -c "
-          from webdriver_manager.chrome import ChromeDriverManager
-          from webdriver_manager.core.os_manager import ChromeType
-          import os
-          
-          print('Downloading ChromeDriver via webdriver-manager...')
-          
-          # Force clean installation
-          os.system('rm -rf ~/.wdm 2>/dev/null || true')
-          
-          # Get ChromeDriver
-          driver_path = ChromeDriverManager(chrome_type=ChromeType.GOOGLE).install()
-          print(f'ChromeDriver installed at: {driver_path}')
-          
-          # Make a system-wide copy
-          import shutil
-          shutil.copy(driver_path, '/usr/local/bin/chromedriver')
-          os.chmod('/usr/local/bin/chromedriver', 0o755)
-          print('Copied to /usr/local/bin/chromedriver')
-          "
-          
-          echo "ChromeDriver installed:"
-          /usr/local/bin/chromedriver --version
+          cache: 'pip'
 
       - name: Install System Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            wget gnupg ca-certificates \
             libnss3 libatk1.0-0 libatk-bridge2.0-0 \
             libcups2 libdrm2 libxkbcommon0 \
             libxcomposite1 libxdamage1 libxrandr2 \
             libgbm1 libasound2 libpangocairo-1.0-0 \
             libpango-1.0-0 libcairo2 libgdk-pixbuf2.0-0 \
-            xvfb
+            xvfb unzip
 
-      - name: Install Python dependencies
+      - name: Install Chrome
+        run: |
+          # Install Google Chrome
+          wget -q -O /tmp/chrome.deb \
+            "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb"
+          sudo apt-get install -y /tmp/chrome.deb
+          rm /tmp/chrome.deb
+          
+          echo "Chrome installed:"
+          google-chrome --version
+
+      - name: Install ChromeDriver (System)
+        run: |
+          # Get Chrome version
+          CHROME_VERSION=$(google-chrome --version | awk '{print $3}' | cut -d'.' -f1)
+          echo "Chrome major version: $CHROME_VERSION"
+          
+          # Download matching ChromeDriver
+          CHROMEDRIVER_VERSION=$(curl -s "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_$CHROME_VERSION")
+          echo "ChromeDriver version: $CHROMEDRIVER_VERSION"
+          
+          wget -q "https://chromedriver.storage.googleapis.com/$CHROMEDRIVER_VERSION/chromedriver_linux64.zip"
+          unzip -q chromedriver_linux64.zip
+          sudo mv chromedriver /usr/local/bin/
+          sudo chmod +x /usr/local/bin/chromedriver
+          rm chromedriver_linux64.zip
+          
+          echo "ChromeDriver installed:"
+          chromedriver --version
+
+      - name: Install Python Packages
         run: |
           python -m pip install --upgrade pip
           pip install \
@@ -130,9 +79,8 @@ jobs:
             beautifulsoup4==4.12.3 \
             lxml==4.9.4
 
-      - name: Start Virtual Display (for headless)
+      - name: Start Virtual Display
         run: |
-          # Start Xvfb for headless display
           Xvfb :99 -screen 0 1920x1080x24 &
           sleep 3
           export DISPLAY=:99
@@ -140,7 +88,9 @@ jobs:
 
       - name: Verify Setup
         run: |
-          echo "=== Final Verification ==="
+          export DISPLAY=:99
+          
+          echo "=== System Verification ==="
           echo "Chrome: $(which google-chrome)"
           google-chrome --version
           echo ""
@@ -148,49 +98,50 @@ jobs:
           chromedriver --version
           echo ""
           
-          # Quick Python test
-          echo "=== Quick Selenium Test ==="
+          echo "=== Testing Python Setup ==="
           python -c "
-          from selenium import webdriver
-          from selenium.webdriver.chrome.options import Options
-          from selenium.webdriver.chrome.service import Service
-          import os
+          import sys
+          print('Python:', sys.version)
           
-          print('Testing Selenium setup...')
-          
-          options = Options()
-          options.add_argument('--headless=new')
-          options.add_argument('--no-sandbox')
-          options.add_argument('--disable-dev-shm-usage')
-          options.add_argument('--window-size=1920,1080')
-          
-          # Use system ChromeDriver
-          service = Service('/usr/local/bin/chromedriver')
-          
+          # Test webdriver-manager
           try:
+              from webdriver_manager.chrome import ChromeDriverManager
+              driver_path = ChromeDriverManager().install()
+              print(f'✓ webdriver-manager working: {driver_path}')
+          except Exception as e:
+              print(f'✗ webdriver-manager error: {e}')
+          
+          # Test if chromedriver is in PATH
+          import shutil
+          chromedriver_path = shutil.which('chromedriver')
+          if chromedriver_path:
+              print(f'✓ ChromeDriver found in PATH: {chromedriver_path}')
+          else:
+              print('✗ ChromeDriver not found in PATH')
+          
+          # Test basic Selenium
+          try:
+              from selenium import webdriver
+              from selenium.webdriver.chrome.options import Options
+              from selenium.webdriver.chrome.service import Service
+              print('✓ Selenium imports successful')
+              
+              # Quick test with system chromedriver
+              options = Options()
+              options.add_argument('--headless=new')
+              options.add_argument('--no-sandbox')
+              options.add_argument('--disable-dev-shm-usage')
+              
+              service = Service('/usr/local/bin/chromedriver')
               driver = webdriver.Chrome(service=service, options=options)
               driver.get('https://www.google.com')
-              print(f'✓ Success! Page title: {driver.title}')
-              print(f'✓ Page size: {len(driver.page_source)} characters')
-              
-              # Test scrolling
-              driver.execute_script('window.scrollTo(0, 100)')
-              print('✓ JavaScript execution works')
-              
+              print(f'✓ Chrome test successful: {driver.title}')
               driver.quit()
-              print('✓ Browser cleanup successful')
-              print('')
-              print('✓ ALL TESTS PASSED - Ready to scrape!')
-              
           except Exception as e:
-              print(f'✗ Error: {e}')
-              import traceback
-              traceback.print_exc()
-              print('')
-              print('⚠ Setup verification failed')
+              print(f'✗ Selenium test failed: {e}')
           "
 
-      - name: Run scraper
+      - name: Run Scraper
         env:
           CURR_URL: ${{ matrix.url }}
           SITEMAP_OFFSET: ${{ matrix.offset }}
@@ -200,72 +151,55 @@ jobs:
         run: |
           echo "=== Starting Scraper ==="
           echo "Configuration:"
-          echo "  Base URL: $CURR_URL"
-          echo "  Sitemap offset: $SITEMAP_OFFSET"
-          echo "  Max sitemaps: $MAX_SITEMAPS"
-          echo "  Max URLs per sitemap: $MAX_URLS_PER_SITEMAP"
-          echo "  Parallel workers: $MAX_WORKERS"
+          echo "  URLs per sitemap: $MAX_URLS_PER_SITEMAP"
+          echo "  Workers: $MAX_WORKERS"
           echo ""
           
-          # Run with virtual display
-          export DISPLAY=:99
+          # Change to your scraper directory if needed
+          if [ -d "cymax_scraper" ]; then
+            cd cymax_scraper
+          fi
+          
           python main.py
 
-      - name: Upload chunk
-        if: always()
+      - name: Upload Results
         uses: actions/upload-artifact@v4
         with:
-          name: cymax_chunk_${{ matrix.offset }}
-          path: cymax_chunk_*.csv
+          name: cymax_results
+          path: |
+            cymax_chunk_*.csv
+            */cymax_chunk_*.csv
+          retention-days: 7
 
-  merge:
-    needs: scrape
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: chunks
-
-      - name: Merge CSVs
+      - name: Show Results Summary
+        if: always()
         run: |
-          echo "=== Merging CSV Files ==="
+          echo "=== Results Summary ==="
           
-          # Create header
-          echo "Ref Product URL,Ref Product ID,Ref Varient ID,Ref Category,Ref Category URL,Ref Brand Name,Ref Product Name,Ref SKU,Ref MPN,Ref GTIN,Ref Price,Ref Main Image,Ref Quantity,Ref Group Attr 1,Ref Group Attr 2,Ref Status,Date Scrapped" > cymax_full.csv
+          # Find CSV files
+          CSV_FILES=$(find . -name "cymax_chunk_*.csv" -type f)
           
-          # Count and merge
-          COUNT=0
-          for file in $(find chunks -name "cymax_chunk_*.csv" -type f | sort); do
-            if [ -f "$file" ] && [ -s "$file" ]; then
-              ROWS=$(( $(wc -l < "$file") - 1 ))
-              if [ $ROWS -gt 0 ]; then
-                tail -n +2 "$file" >> cymax_full.csv
-                COUNT=$((COUNT + ROWS))
-                echo "  Added $ROWS rows from $(basename $file)"
-              fi
+          if [ -z "$CSV_FILES" ]; then
+            echo "No CSV files found"
+            exit 0
+          fi
+          
+          TOTAL_PRODUCTS=0
+          for CSV in $CSV_FILES; do
+            if [ -f "$CSV" ]; then
+              ROWS=$(($(wc -l < "$CSV") - 1))
+              TOTAL_PRODUCTS=$((TOTAL_PRODUCTS + ROWS))
+              echo "  $CSV: $ROWS products"
             fi
           done
           
           echo ""
-          echo "✓ Merged $COUNT total rows into cymax_full.csv"
-
-      - name: Upload final CSV
-        uses: actions/upload-artifact@v4
-        with:
-          name: cymax_complete_dataset
-          path: cymax_full.csv
-
-      - name: Show Results
-        run: |
-          echo "=== Scraping Results ==="
-          if [ -f cymax_full.csv ]; then
-            ROWS=$(( $(wc -l < cymax_full.csv) - 1 ))
-            echo "Total products scraped: $ROWS"
-            if [ $ROWS -gt 0 ]; then
-              echo ""
-              echo "Sample of first product:"
-              head -2 cymax_full.csv | tail -1 | cut -d',' -f1-3
-            fi
-          else
-            echo "No output CSV generated"
+          echo "Total products scraped: $TOTAL_PRODUCTS"
+          
+          # Show sample
+          if [ $TOTAL_PRODUCTS -gt 0 ]; then
+            SAMPLE_CSV=$(echo "$CSV_FILES" | head -1)
+            echo ""
+            echo "Sample from $(basename $SAMPLE_CSV):"
+            head -2 "$SAMPLE_CSV" | tail -1 | cut -d',' -f1,7 | sed 's/,/ - /'
           fi
