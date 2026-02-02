@@ -23,13 +23,89 @@ config = load_config()
 def log(msg):
     print(f"[FETCHER] {msg}")
 
+PROXY_LIST = [
+    "202.133.88.173:80",
+    "213.142.156.97:80",
+    "138.68.60.8:8080",
+    "91.98.78.64:80",
+    "212.47.232.28:80",
+    "38.248.248.61:10002",
+    "188.239.43.6:80",
+    "50.203.147.152:80",
+    "181.143.104.84:3000"
+]
+
+def create_proxy_extension(proxy_host, proxy_port):
+    manifest_json = """
+    {
+        "version": "1.0.0",
+        "manifest_version": 2,
+        "name": "Chrome Proxy",
+        "permissions": [
+            "proxy",
+            "tabs",
+            "unlimitedStorage",
+            "storage",
+            "<all_urls>",
+            "webRequest",
+            "webRequestBlocking"
+        ],
+        "background": {
+            "scripts": ["background.js"],
+            "persistent": false
+        },
+        "minimum_chrome_version": "22.0.0"
+    }
+    """
+    background_js = f"""
+    var config = {{
+        mode: "fixed_servers",
+        rules: {{
+            singleProxy: {{
+                scheme: "http",
+                host: "{proxy_host}",
+                port: parseInt({proxy_port})
+            }},
+            bypassList: ["localhost"]
+        }}
+    }};
+
+    chrome.proxy.settings.set({{value: config, scope: "regular"}}, function() {{}});
+
+    chrome.webRequest.onAuthRequired.addListener(
+        function() {{
+            return {{cancel: false}};
+        }},
+        {{urls: ["<all_urls>"]}},
+        ['blocking']
+    );
+    """
+
+    extension_dir = tempfile.mkdtemp(prefix="proxy_ext_")
+    
+    with open(os.path.join(extension_dir, 'manifest.json'), 'w') as f:
+        f.write(manifest_json)
+    
+    with open(os.path.join(extension_dir, 'background.js'), 'w') as f:
+        f.write(background_js)
+    
+    return extension_dir
+
 class Fetcher:
     def __init__(self):
-        self.driver = None
+        self.proxy_list = PROXY_LIST
+        self.proxy_index = 0
+        log(f"Loaded {len(self.proxy_list)} WORKING PROXIES - Ready for Cloudflare bypass!")
+
+    def get_next_proxy(self):
+        proxy = self.proxy_list[self.proxy_index % len(self.proxy_list)]
+        self.proxy_index += 1
+        host, port = proxy.split(':')
+        log(f"Using proxy #{(self.proxy_index-1)%len(self.proxy_list)+1}: {proxy}")
+        return host, int(port)
 
     def _create_fresh_browser(self):
         options = Options()
-
         temp_dir = tempfile.mkdtemp(prefix="chrome_")
         options.add_argument(f"--user-data-dir={temp_dir}")
 
@@ -38,6 +114,16 @@ class Fetcher:
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-extensions")
+        options.add_argument("--disable-plugins-discovery")
+        options.add_argument("--disable-web-security")
+        options.add_argument("--disable-features=VizDisplayCompositor")
+        options.add_argument("--disable-background-timer-throttling")
+        options.add_argument("--disable-backgrounding-occluded-windows")
+        options.add_argument("--disable-renderer-backgrounding")
+
+        proxy_host, proxy_port = self.get_next_proxy()
+        proxy_extension = create_proxy_extension(proxy_host, proxy_port)
+        options.add_argument(f"--load-extension={proxy_extension}")
 
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option("useAutomationExtension", False)
@@ -52,9 +138,12 @@ class Fetcher:
             Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
             Object.defineProperty(navigator, 'languages', {get: () => ['en-US','en']});
             window.chrome = { runtime: {} };
+            Object.defineProperty(navigator, 'hardwareConcurrency', {get: () => 8});
+            Object.defineProperty(navigator, 'deviceMemory', {get: () => 8});
+            Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
+            Object.defineProperty(navigator, 'maxTouchPoints', {get: () => 0});
         """)
         return driver
-
 
     def fetch(self, url: str, retries=None) -> str:
         if retries is None:
