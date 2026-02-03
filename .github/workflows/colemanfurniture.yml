@@ -116,7 +116,7 @@ jobs:
           echo "Domain: ${{ matrix.domain }}"
           
           # Run the Script
-          python colemanfurniture_scraper/scripts/run_spider.py \
+          python colemanfurniture_scraper/scripts/run.py \
             --website-url "$CURR_URL" \
             --sitemap-offset $SITEMAP_OFFSET \
             --max-sitemaps $MAX_SITEMAPS \
