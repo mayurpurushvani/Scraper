@@ -1,0 +1,234 @@
+name: Coleman and Homegallerystores Parallel Sitemap Scraper
+on:
+  workflow_dispatch:
+    inputs:
+      website_url:
+        description: "Website URL to scrape"
+        required: true
+        default: "https://colemanfurniture.com"
+        type: string
+      total_sitemaps:
+        description: "Total sitemaps to process (0 = all)"
+        default: "0"
+        type: number
+      sitemaps_per_job:
+        description: "Sitemaps per parallel job"
+        default: "2"
+        type: number
+      urls_per_sitemap:
+        description: "Max URLs per sitemap (0 = all)"
+        default: "500"
+        type: number
+      max_workers:
+        description: "Max concurrent workers per job"
+        default: "3"
+        type: number
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - id: matrix
+        run: |
+          # Extract domain for naming
+          URL="${{ github.event.inputs.website_url }}"
+          DOMAIN=$(echo "$URL" | sed -E 's|https?://||;s|/.*||' | sed 's/[^a-zA-Z0-9]/_/g')
+          
+          # If total_sitemaps is 0, we'll process in chunks
+          TOTAL=${{ github.event.inputs.total_sitemaps }}
+          PER_JOB=${{ github.event.inputs.sitemaps_per_job }}
+          
+          # Default to 5 jobs if TOTAL is 0 (unknown number of sitemaps)
+          if [ "$TOTAL" = "0" ]; then
+            JOBS=5
+            echo "Will process unknown number of sitemaps in $JOBS parallel jobs"
+          else
+            JOBS=$(( (TOTAL + PER_JOB - 1) / PER_JOB ))
+          fi
+          
+          # Generate matrix with offsets
+          MATRIX="["
+          for ((i=0; i<JOBS; i++)); do
+            OFFSET=$(( i * PER_JOB ))
+            LIMIT=$PER_JOB
+            # If TOTAL > 0 and this is the last job, adjust limit
+            if [ "$TOTAL" != "0" ] && [ $((OFFSET + PER_JOB)) -gt $TOTAL ]; then
+              LIMIT=$((TOTAL - OFFSET))
+            fi
+            MATRIX+="{\"offset\":$OFFSET,\"limit\":$LIMIT,\"domain\":\"$DOMAIN\"},"
+          done
+          MATRIX="${MATRIX%,}]"
+          
+          echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
+          echo "Generated $JOBS jobs for domain: $DOMAIN"
+
+  scrape:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.plan.outputs.matrix) }}
+
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          
+      - name: Create output directory
+        run: mkdir -p output
+          
+      - name: Run scraper job
+        env:
+          CURR_URL: ${{ github.event.inputs.website_url }}
+          SITEMAP_OFFSET: ${{ matrix.offset }}
+          MAX_SITEMAPS: ${{ matrix.limit }}
+          MAX_URLS_PER_SITEMAP: ${{ github.event.inputs.urls_per_sitemap }}
+          MAX_WORKERS: ${{ github.event.inputs.max_workers }}
+        run: |
+          echo "=== Job ${{ strategy.job-index }} ==="
+          echo "Website: $CURR_URL"
+          echo "Offset: $SITEMAP_OFFSET"
+          echo "Max sitemaps: $MAX_SITEMAPS"
+          echo "Max URLs per sitemap: $MAX_URLS_PER_SITEMAP"
+          echo "Max workers: $MAX_WORKERS"
+          echo "Domain: ${{ matrix.domain }}"
+          
+          # Run the Script
+          python colemanfurniture_scraper/scripts/run.py \
+            --website-url "$CURR_URL" \
+            --sitemap-offset $SITEMAP_OFFSET \
+            --max-sitemaps $MAX_SITEMAPS \
+            --max-urls-per-sitemap $MAX_URLS_PER_SITEMAP \
+            --job-id "job${{ strategy.job-index }}" \
+            --output-dir output
+          
+          # Rename output to match pattern (just in case)
+          mv output/*.csv output/${ { matrix.domain }}_chunk_${{ matrix.offset }}.csv 2>/dev/null || true
+          
+      - name: List output files
+        run: ls -la output/ || echo "No output directory"
+        
+      - name: Upload chunk artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.domain }}_chunk_${{ matrix.offset }}
+          path: output/*.csv
+          retention-days: 1
+
+  merge:
+    needs: scrape
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: chunks
+          
+      - name: Merge CSVs
+        run: |
+          echo "=== Merging CSV files ==="
+          
+          # Find all CSV files
+          CSV_FILES=$(find chunks -name "*.csv" -type f)
+          
+          if [ -z "$CSV_FILES" ]; then
+            echo "No CSV files found to merge"
+            # Create empty CSV with headers
+            echo "Ref Product URL,Ref Product ID,Ref Varient ID,Ref Category,Ref Category URL,Ref Brand Name,Ref Product Name,Ref SKU,Ref MPN,Ref GTIN,Ref Price,Ref Main Image,Ref Quantity,Ref Group Attr 1,Ref Group Attr 2,Ref Status,Date Scrapped" > products_full.csv
+            echo "Created empty CSV"
+          else
+            echo "Found $(echo "$CSV_FILES" | wc -l) CSV files"
+            
+            # Get first file for headers
+            FIRST_FILE=$(echo "$CSV_FILES" | head -n 1)
+            echo "Using headers from: $FIRST_FILE"
+            
+            # Extract headers (first line)
+            head -n 1 "$FIRST_FILE" > products_full.csv
+            
+            # Merge all files (skip headers)
+            for f in $CSV_FILES; do
+              echo "Merging: $f"
+              # Skip first line (header) and empty lines
+              tail -n +2 "$f" | sed '/^$/d' >> products_full.csv
+            done
+            
+            # Count rows
+            TOTAL_ROWS=$(tail -n +2 products_full.csv | wc -l)
+            echo "Merged $TOTAL_ROWS rows"
+          fi
+          
+      - name: Build output filename
+        id: meta
+        run: |
+          # Extract domain from first CSV filename
+          FIRST_CSV=$(find chunks -name "*.csv" -type f | head -n 1)
+          if [ -n "$FIRST_CSV" ]; then
+            # Extract domain from filename pattern: domain_chunk_0.csv
+            DOMAIN=$(basename "$FIRST_CSV" | cut -d'_' -f1)
+          else
+            # Fallback to input URL
+            URL="${{ github.event.inputs.website_url }}"
+            DOMAIN=$(echo "$URL" | sed -E 's|https?://||;s|/.*||' | sed 's/[^a-zA-Z0-9]/_/g')
+          fi
+          
+          DATE=$(date +%F)
+          FILENAME="${DOMAIN}_${DATE}.csv"
+          echo "name=$FILENAME" >> $GITHUB_OUTPUT
+          echo "Generated filename: $FILENAME"
+          
+      - name: Upload final CSV artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.name }}
+          path: products_full.csv
+          retention-days: 7
+          
+      - name: Upload to FTP server
+        if: success()
+        env:
+          FTP_HOST: ${{ secrets.FTP_HOST }}
+          FTP_USER: ${{ secrets.FTP_USER }}
+          FTP_PASS: ${{ secrets.FTP_PASS }}
+          FTP_BASE_DIR: ${{ secrets.FTP_PATH }}
+          FILE: ${{ steps.meta.outputs.name }}
+        run: |
+          echo "=== Uploading to FTP ==="
+          echo "FTP Host: $FTP_HOST"
+          echo "File: $FILE"
+          
+          # Install lftp
+          sudo apt-get update && sudo apt-get install -y lftp
+          
+          # Upload file
+          lftp -u "$FTP_USER","$FTP_PASS" "$FTP_HOST" <<EOF
+          set ftp:ssl-allow no
+          set ssl:verify-certificate no
+          mkdir -p $FTP_BASE_DIR
+          cd $FTP_BASE_DIR
+          put products_full.csv -o $FILE
+          ls -la $FILE
+          bye
+          EOF
+          
+          echo "✅ File uploaded successfully: $FILE"
+          
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -rf chunks output products_full.csv
+          echo "Cleanup completed"
