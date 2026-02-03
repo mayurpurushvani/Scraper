@@ -116,7 +116,7 @@ jobs:
           echo "Domain: ${{ matrix.domain }}"
           
           # Run the Script
-          python colemanfurniture_scraper/scripts/run.py \
+          python colemanfurniture_scraper/scripts/run_spider.py \
             --website-url "$CURR_URL" \
             --sitemap-offset $SITEMAP_OFFSET \
             --max-sitemaps $MAX_SITEMAPS \
@@ -124,8 +124,12 @@ jobs:
             --job-id "job${{ strategy.job-index }}" \
             --output-dir output
           
-          # Rename output to match pattern (just in case)
-          mv output/*.csv output/${ { matrix.domain }}_chunk_${{ matrix.offset }}.csv 2>/dev/null || true
+          # Rename output to match pattern - FIXED LINE BELOW
+          mv output/*.csv output/${{ matrix.domain }}_chunk_${{ matrix.offset }}.csv 2>/dev/null || true
+          
+          # Debug: Show what files were created
+          echo "Files in output directory:"
+          ls -la output/
           
       - name: List output files
         run: ls -la output/ || echo "No output directory"
