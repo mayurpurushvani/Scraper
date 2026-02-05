@@ -34,9 +34,6 @@ class SitemapProcessor:
             '/sitemap/sitemap_index.xml',
             '/sitemap.xml.gz',
             '/sitemap_index.xml.gz',
-            '/sitemap/hgs/sitemap_index.xml.gz',
-            '/sitemap/hgs/sitemap_index.xml',
-            '/hgs/sitemap_index.xml.gz',
         ]
         
         logger.info("Trying common sitemap paths...")
@@ -61,11 +58,37 @@ class SitemapProcessor:
         logger.info(f"Extracting sitemaps from: {main_sitemap_url}")
         
         try:
-            response = requests.get(main_sitemap_url, timeout=30)
+            # Add proper headers to avoid 403
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
+                'Accept': 'application/xml,text/xml,*/*'
+            }
+            
+            response = requests.get(main_sitemap_url, timeout=30, headers=headers)
+            
+            # For HomeGallery, try without .gz if we get HTML content
+            if main_sitemap_url.endswith('.gz'):
+                # Check if response is HTML (error page)
+                content_start = response.content[:100].decode('utf-8', errors='ignore').lower()
+                if response.status_code == 403 or '<html' in content_start or '<!doctype' in content_start:
+                    logger.info(f"Got 403/HTML for gzipped sitemap. Trying uncompressed version...")
+                    # Try without .gz extension
+                    non_gz_url = main_sitemap_url[:-3]  # Remove .gz
+                    response = requests.get(non_gz_url, timeout=30, headers=headers)
+            
+            if response.status_code != 200:
+                raise Exception(f"Failed to fetch sitemap: Status {response.status_code}")
+            
             content = response.content
             
-            if main_sitemap_url.endswith('.gz'):
-                content = gzip.decompress(content)
+            # Try to decompress if it's gzipped
+            try:
+                if main_sitemap_url.endswith('.gz'):
+                    content = gzip.decompress(content)
+            except (gzip.BadGzipFile, OSError):
+                # Not a valid gzip file, use content as-is
+                logger.debug("Content is not a valid gzip file, using as-is")
+                pass
             
             root = ET.fromstring(content)
             ns = {'ns': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
@@ -81,36 +104,13 @@ class SitemapProcessor:
                         sitemaps.append(url.text)
                 
                 if not sitemaps:
-                    for sitemap in root.findall('sitemap/loc'):
-                        if sitemap.text:
-                            sitemaps.append(sitemap.text)
-                    
-                    if not sitemaps:
-                        for url in root.findall('url/loc'):
-                            if url.text:
-                                sitemaps.append(url.text)
-                    
-                    if not sitemaps:
-                        sitemaps = [main_sitemap_url]
+                    sitemaps = [main_sitemap_url]
             
             logger.info(f"Extracted {len(sitemaps)} sitemaps/URLs")
             return sitemaps
             
         except Exception as e:
-            logger.error(f"Failed to parse sitemap {main_sitemap_url}: {e}")
-            try:
-                root = ET.fromstring(content)
-                sitemaps = []
-                for url in root.findall('.//loc'):
-                    if url.text:
-                        sitemaps.append(url.text)
-                
-                if sitemaps:
-                    logger.info(f"Extracted {len(sitemaps)} URLs without namespace")
-                    return sitemaps
-            except:
-                pass
-            
+            logger.error(f"Failed to parse sitemap: {e}")
             raise Exception(f"Failed to parse sitemap {main_sitemap_url}: {e}")
     
     @staticmethod
