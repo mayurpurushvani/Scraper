@@ -85,13 +85,30 @@ class ProductFetcher(Spider):
         
         self.logger.info(f"Processing {len(all_urls)} URLs from sitemap")
         
+        plp_count = 0
+        pdp_count = 0
+        
         for url in all_urls:
+            if self._is_plp_url(url):
+                plp_count += 1
+                continue
+            pdp_count += 1
             yield Request(
                 url,
                 callback=self.parse_product_page_with_check,
                 meta={'url': url},
                 errback=self.handle_product_error
             )
+        
+        self.logger.info(f"Filtered {plp_count} PLP pages, {pdp_count} PDP pages to scrape")
+    
+    def _is_plp_url(self, url: str) -> bool:
+        parsed_url = urlparse(url)
+        path = parsed_url.path.strip('/')
+        
+        if not path:
+            return False       
+        return '/' in path
 
     def parse_product_page_with_check(self, response):
         json_scripts = response.xpath('//script[@type="application/ld+json"]/text()').getall()
@@ -116,7 +133,6 @@ class ProductFetcher(Spider):
         if has_product_json:
             yield from self.parse_product_page(response)
         else:
-            self.logger.debug(f"Skipped (no Product JSON-LD): {response.url}")
             return
     
     def parse_product_page(self, response):

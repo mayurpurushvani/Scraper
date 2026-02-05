@@ -40,7 +40,7 @@ class SitemapProcessor:
         for path in common_paths:
             sitemap_url = urljoin(site_url + '/', path.lstrip('/'))
             try:
-                logger.debug(f"Trying: {sitemap_url}")
+                # logger.debug(f"Trying: {sitemap_url}")
                 response = requests.head(sitemap_url, timeout=5, allow_redirects=True)
                 if response.status_code == 200:
                     content_type = response.headers.get('content-type', '').lower()
@@ -58,19 +58,14 @@ class SitemapProcessor:
         logger.info(f"Extracting sitemaps from: {main_sitemap_url}")
         
         try:
-            # Try different approaches for HomeGallery
             if 'homegallerystores' in main_sitemap_url:
-                # Try multiple approaches
                 approaches = [
-                    # Approach 1: Regular request
                     lambda: requests.get(main_sitemap_url, timeout=30),
-                    # Approach 2: Chrome User-Agent
                     lambda: requests.get(
                         main_sitemap_url,
                         headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'},
                         timeout=30
                     ),
-                    # Approach 3: Try without .gz
                     lambda: requests.get(main_sitemap_url[:-3] if main_sitemap_url.endswith('.gz') else main_sitemap_url, timeout=30),
                 ]
                 
@@ -82,17 +77,15 @@ class SitemapProcessor:
                         if response.status_code == 200:
                             break
                         elif response.status_code == 403:
-                            continue  # Try next approach
+                            continue
                     except Exception as e:
                         logger.debug(f"Approach {i+1} failed: {e}")
                         continue
                 
                 if not response or response.status_code != 200:
-                    # If all approaches fail, return empty list - let spider handle it
                     logger.warning("All approaches failed for HomeGallery sitemap. Returning empty list.")
                     return []
             else:
-                # Regular approach for other sites
                 response = requests.get(main_sitemap_url, timeout=30)
             
             if response.status_code != 200:
@@ -100,12 +93,10 @@ class SitemapProcessor:
             
             content = response.content
             
-            # Try to decompress if it's gzipped
             try:
                 if main_sitemap_url.endswith('.gz') or response.headers.get('content-encoding') == 'gzip':
                     content = gzip.decompress(content)
             except (gzip.BadGzipFile, OSError):
-                # Not a valid gzip file, use content as-is
                 logger.debug("Content is not a valid gzip file, using as-is")
                 pass
             
@@ -131,12 +122,10 @@ class SitemapProcessor:
         except Exception as e:
             logger.error(f"Failed to parse sitemap: {e}")
             
-            # For HomeGallery, return empty list instead of raising
             if 'homegallerystores' in main_sitemap_url:
                 logger.warning(f"HomeGallery sitemap parsing failed. Returning empty list.")
                 return []
             
-            # For other sites, raise the exception
             raise Exception(f"Failed to parse sitemap {main_sitemap_url}: {e}")
     
     @staticmethod
