@@ -60,34 +60,37 @@ class SitemapProcessor:
         try:
             # Try different approaches for HomeGallery
             if 'homegallerystores' in main_sitemap_url:
-                # Approach 1: Try with session and cookies
-                session = requests.Session()
-                session.headers.update({
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Accept': 'application/xml,text/xml,*/*',
-                    'Accept-Encoding': 'gzip, deflate',
-                    'Accept-Language': 'en-US,en;q=0.9',
-                })
-                
-                response = session.get(main_sitemap_url, timeout=30)
-                
-                # If 403, try without .gz extension
-                if response.status_code == 403 and main_sitemap_url.endswith('.gz'):
-                    non_gz_url = main_sitemap_url[:-3]
-                    logger.info(f"Trying without .gz: {non_gz_url}")
-                    response = session.get(non_gz_url, timeout=30)
-                
-                if response.status_code != 200:
-                    # Try one more time with different headers
-                    logger.info("Trying with different headers...")
-                    response = requests.get(
+                # Try multiple approaches
+                approaches = [
+                    # Approach 1: Regular request
+                    lambda: requests.get(main_sitemap_url, timeout=30),
+                    # Approach 2: Chrome User-Agent
+                    lambda: requests.get(
                         main_sitemap_url,
-                        headers={
-                            'User-Agent': 'Mozilla/5.0 (compatible; Bingbot/2.0; +http://www.bing.com/bingbot.htm)',
-                            'Accept': 'application/xml,text/xml,*/*'
-                        },
+                        headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'},
                         timeout=30
-                    )
+                    ),
+                    # Approach 3: Try without .gz
+                    lambda: requests.get(main_sitemap_url[:-3] if main_sitemap_url.endswith('.gz') else main_sitemap_url, timeout=30),
+                ]
+                
+                response = None
+                for i, approach in enumerate(approaches):
+                    try:
+                        logger.info(f"Trying approach {i+1} for HomeGallery sitemap")
+                        response = approach()
+                        if response.status_code == 200:
+                            break
+                        elif response.status_code == 403:
+                            continue  # Try next approach
+                    except Exception as e:
+                        logger.debug(f"Approach {i+1} failed: {e}")
+                        continue
+                
+                if not response or response.status_code != 200:
+                    # If all approaches fail, return empty list - let spider handle it
+                    logger.warning("All approaches failed for HomeGallery sitemap. Returning empty list.")
+                    return []
             else:
                 # Regular approach for other sites
                 response = requests.get(main_sitemap_url, timeout=30)
@@ -106,44 +109,18 @@ class SitemapProcessor:
                 logger.debug("Content is not a valid gzip file, using as-is")
                 pass
             
-            # Try to parse with different namespace approaches
             root = ET.fromstring(content)
-            
-            # Try multiple namespace approaches
-            namespace_attempts = [
-                {'ns': 'http://www.sitemaps.org/schemas/sitemap/0.9'},
-                {'ns': ''},  # Empty namespace
-                {},  # No namespace
-            ]
+            ns = {'ns': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
             
             sitemaps = []
-            for ns in namespace_attempts:
-                try:
-                    # Look for sitemap entries first
-                    sitemap_elements = root.findall('.//ns:sitemap/ns:loc', ns) if 'ns' in ns else root.findall('.//sitemap/loc')
-                    if sitemap_elements:
-                        for sitemap in sitemap_elements:
-                            if sitemap.text:
-                                sitemaps.append(sitemap.text)
-                        break
-                    
-                    # If no sitemap entries, look for url entries
-                    url_elements = root.findall('.//ns:url/ns:loc', ns) if 'ns' in ns else root.findall('.//url/loc')
-                    if url_elements:
-                        for url in url_elements:
-                            if url.text:
-                                sitemaps.append(url.text)
-                        break
-                        
-                except Exception as e:
-                    logger.debug(f"Namespace attempt failed: {e}")
-                    continue
+            for sitemap in root.findall('ns:sitemap/ns:loc', ns):
+                if sitemap.text:
+                    sitemaps.append(sitemap.text)
             
             if not sitemaps:
-                # Last resort: find all loc elements
-                for loc in root.findall('.//loc'):
-                    if loc.text:
-                        sitemaps.append(loc.text)
+                for url in root.findall('ns:url/ns:loc', ns):
+                    if url.text:
+                        sitemaps.append(url.text)
                 
                 if not sitemaps:
                     sitemaps = [main_sitemap_url]
@@ -153,7 +130,13 @@ class SitemapProcessor:
             
         except Exception as e:
             logger.error(f"Failed to parse sitemap: {e}")
-            # Re-raise for the spider to handle
+            
+            # For HomeGallery, return empty list instead of raising
+            if 'homegallerystores' in main_sitemap_url:
+                logger.warning(f"HomeGallery sitemap parsing failed. Returning empty list.")
+                return []
+            
+            # For other sites, raise the exception
             raise Exception(f"Failed to parse sitemap {main_sitemap_url}: {e}")
     
     @staticmethod
