@@ -32,37 +32,21 @@ jobs:
     steps:
       - id: matrix
         run: |
-          # Extract domain for naming
-          URL="${{ github.event.inputs.website_url }}"
-          DOMAIN=$(echo "$URL" | sed -E 's|https?://||;s|/.*||' | sed 's/[^a-zA-Z0-9]/_/g')
-          
-          # If total_sitemaps is 0, we'll process in chunks
           TOTAL=${{ github.event.inputs.total_sitemaps }}
           PER_JOB=${{ github.event.inputs.sitemaps_per_job }}
-          
-          # Default to 5 jobs if TOTAL is 0 (unknown number of sitemaps)
-          if [ "$TOTAL" = "0" ]; then
-            JOBS=5
-            echo "Will process unknown number of sitemaps in $JOBS parallel jobs"
-          else
-            JOBS=$(( (TOTAL + PER_JOB - 1) / PER_JOB ))
-          fi
-          
-          # Generate matrix with offsets
+          URL=${{ github.event.inputs.url }}
+
+          [ "$TOTAL" -eq 0 ] && TOTAL=3
+          JOBS=$(( (TOTAL + PER_JOB - 1) / PER_JOB ))
+
           MATRIX="["
-          for ((i=0; i<JOBS; i++)); do
+          for ((i=0;i<JOBS;i++)); do
             OFFSET=$(( i * PER_JOB ))
-            LIMIT=$PER_JOB
-            # If TOTAL > 0 and this is the last job, adjust limit
-            if [ "$TOTAL" != "0" ] && [ $((OFFSET + PER_JOB)) -gt $TOTAL ]; then
-              LIMIT=$((TOTAL - OFFSET))
-            fi
-            MATRIX+="{\"offset\":$OFFSET,\"limit\":$LIMIT,\"domain\":\"$DOMAIN\"},"
+            MATRIX+="{\"offset\":$OFFSET,\"limit\":$PER_JOB,\"url\":\"$URL\"},"
           done
           MATRIX="${MATRIX%,}]"
-          
+
           echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
-          echo "Generated $JOBS jobs for domain: $DOMAIN"
 
   scrape:
     needs: plan
