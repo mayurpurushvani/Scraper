@@ -11,12 +11,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 try:
-    from colemanfurniture_scraper.items import ProductItem
     from utils.sitemap_processor import SitemapProcessor
 except ImportError:
     import os
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from items import ProductItem
 
 class ProductFetcher(Spider):
     name = 'product'
@@ -122,25 +120,24 @@ class ProductFetcher(Spider):
             return
     
     def parse_product_page(self, response):
-        item = ProductItem()
-        
-        item['ref_product_url'] = response.url
-        item['date_scrapped'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        item['ref_product_name'] = self.extract_product_name(response)
-        item['ref_price'] = self.extract_price(response)
-        item['ref_sku'] = self.extract_sku(response)
-        item['ref_mpn'] = self.extract_mpn(response)
-        item['ref_gtin'] = self.extract_gtin(response)
-        item['ref_brand_name'] = self.extract_brand(response)
-        item['ref_main_image'] = self.extract_main_image(response)
-        item['ref_category'] = self.extract_category(response)
-        item['ref_category_url'] = self.extract_category_url(response)
-        item['ref_quantity'] = self.extract_quantity(response)
-        item['ref_status'] = self.extract_status(response)
-        item['ref_product_id'] = self.extract_product_id(response)
-        item['ref_variant_id'] = self.extract_variant_id(response)
-        item['ref_group_attr1'] = self.extract_group_attr1(response, 1)
-        item['ref_group_attr2'] = self.extract_group_attr2(response, 2)
+        item = {}
+        item['Ref Product URL'] = response.url
+        item['Date Scrapped'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        item['Ref Product Name'] = self.extract_product_name(response)
+        item['Ref Price'] = self.extract_price(response)
+        item['Ref SKU'] = self.extract_sku(response)
+        item['Ref MPN'] = self.extract_mpn(response)
+        item['Ref GTIN'] = self.extract_gtin(response)
+        item['Ref Brand Name'] = self.extract_brand(response)
+        item['Ref Main Image'] = self.extract_main_image(response)
+        item['Ref Category'] = self.extract_category(response)
+        item['Ref Category URL'] = self.extract_category_url(response)
+        item['Ref Quantity'] = self.extract_quantity(response)
+        item['Ref Status'] = self.extract_status(response)
+        item['Ref Product ID'] = self.extract_product_id(response)
+        item['Ref Variant ID'] = self.extract_variant_id(response)
+        item['Ref Group Attr 1'] = self.extract_group_attr1(response, 1)
+        item['Ref Group Attr 2'] = self.extract_group_attr2(response, 2)
         
         yield item
        
@@ -243,26 +240,6 @@ class ProductFetcher(Spider):
         return ''
     
     def extract_quantity(self, response):
-        for script in response.xpath('//script[@type="application/ld+json"]/text()').getall():
-            try:
-                data = json.loads(script)
-                if data.get('@type') == 'Product':
-                    offers = data.get('offers', {})
-                    if isinstance(offers, dict):
-                        availability = offers.get('availability', '')
-                        if 'InStock' in str(availability):
-                            stock_text = offers.get('availability', '')
-                            if isinstance(stock_text, str):
-                                match = re.search(r'(\d+)', stock_text)
-                                if match:
-                                    return match.group(1)
-                            return 'In Stock'
-                        elif 'OutOfStock' in str(availability) or 'SoldOut' in str(availability):
-                            return 'Out of Stock'
-                        elif 'PreOrder' in str(availability) or 'PreOrder' in str(availability):
-                            return 'Pre-Order'
-            except:
-                continue
         return ''
 
     def extract_status(self, response):

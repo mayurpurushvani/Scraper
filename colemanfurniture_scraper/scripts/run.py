@@ -53,23 +53,23 @@ def main():
     download_delay = float(os.getenv('DOWNLOAD_DELAY', '0.5'))
     settings.set('DOWNLOAD_DELAY', download_delay)
     settings.set('FEED_EXPORT_FIELDS', [
-        'ref_product_url',
-        'ref_product_id', 
-        'ref_variant_id',
-        'ref_category',
-        'ref_category_url',
-        'ref_brand_name',
-        'ref_product_name',
-        'ref_sku',
-        'ref_mpn',
-        'ref_gtin',
-        'ref_price',
-        'ref_main_image',
-        'ref_quantity',
-        'ref_group_attr1',
-        'ref_group_attr2',
-        'ref_status',
-        'date_scrapped'
+        'Ref Product URL',
+        'Ref Product ID', 
+        'Ref Variant ID',
+        'Ref Category',
+        'Ref Category URL',
+        'Ref Brand Name',
+        'Ref Product Name',
+        'Ref SKU',
+        'Ref MPN',
+        'Ref GTIN',
+        'Ref Price',
+        'Ref Main Image',
+        'Ref Quantity',
+        'Ref Group Attr 1',
+        'Ref Group Attr 2',
+        'Ref Status',
+        'Date Scrapped'
     ])
     process = CrawlerProcess(settings)
     
