@@ -34,7 +34,7 @@ jobs:
         run: |
           TOTAL=${{ github.event.inputs.total_sitemaps }}
           PER_JOB=${{ github.event.inputs.sitemaps_per_job }}
-          URL=${{ github.event.inputs.url }}
+          URL="${{ github.event.inputs.website_url }}"
 
           [ "$TOTAL" -eq 0 ] && TOTAL=3
           JOBS=$(( (TOTAL + PER_JOB - 1) / PER_JOB ))
