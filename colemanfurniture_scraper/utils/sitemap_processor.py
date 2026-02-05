@@ -58,23 +58,39 @@ class SitemapProcessor:
         logger.info(f"Extracting sitemaps from: {main_sitemap_url}")
         
         try:
-            # Add proper headers to avoid 403
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
-                'Accept': 'application/xml,text/xml,*/*'
-            }
-            
-            response = requests.get(main_sitemap_url, timeout=30, headers=headers)
-            
-            # For HomeGallery, try without .gz if we get HTML content
-            if main_sitemap_url.endswith('.gz'):
-                # Check if response is HTML (error page)
-                content_start = response.content[:100].decode('utf-8', errors='ignore').lower()
-                if response.status_code == 403 or '<html' in content_start or '<!doctype' in content_start:
-                    logger.info(f"Got 403/HTML for gzipped sitemap. Trying uncompressed version...")
-                    # Try without .gz extension
-                    non_gz_url = main_sitemap_url[:-3]  # Remove .gz
-                    response = requests.get(non_gz_url, timeout=30, headers=headers)
+            # Try different approaches for HomeGallery
+            if 'homegallerystores' in main_sitemap_url:
+                # Approach 1: Try with session and cookies
+                session = requests.Session()
+                session.headers.update({
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept': 'application/xml,text/xml,*/*',
+                    'Accept-Encoding': 'gzip, deflate',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                })
+                
+                response = session.get(main_sitemap_url, timeout=30)
+                
+                # If 403, try without .gz extension
+                if response.status_code == 403 and main_sitemap_url.endswith('.gz'):
+                    non_gz_url = main_sitemap_url[:-3]
+                    logger.info(f"Trying without .gz: {non_gz_url}")
+                    response = session.get(non_gz_url, timeout=30)
+                
+                if response.status_code != 200:
+                    # Try one more time with different headers
+                    logger.info("Trying with different headers...")
+                    response = requests.get(
+                        main_sitemap_url,
+                        headers={
+                            'User-Agent': 'Mozilla/5.0 (compatible; Bingbot/2.0; +http://www.bing.com/bingbot.htm)',
+                            'Accept': 'application/xml,text/xml,*/*'
+                        },
+                        timeout=30
+                    )
+            else:
+                # Regular approach for other sites
+                response = requests.get(main_sitemap_url, timeout=30)
             
             if response.status_code != 200:
                 raise Exception(f"Failed to fetch sitemap: Status {response.status_code}")
@@ -83,25 +99,51 @@ class SitemapProcessor:
             
             # Try to decompress if it's gzipped
             try:
-                if main_sitemap_url.endswith('.gz'):
+                if main_sitemap_url.endswith('.gz') or response.headers.get('content-encoding') == 'gzip':
                     content = gzip.decompress(content)
             except (gzip.BadGzipFile, OSError):
                 # Not a valid gzip file, use content as-is
                 logger.debug("Content is not a valid gzip file, using as-is")
                 pass
             
+            # Try to parse with different namespace approaches
             root = ET.fromstring(content)
-            ns = {'ns': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
+            
+            # Try multiple namespace approaches
+            namespace_attempts = [
+                {'ns': 'http://www.sitemaps.org/schemas/sitemap/0.9'},
+                {'ns': ''},  # Empty namespace
+                {},  # No namespace
+            ]
             
             sitemaps = []
-            for sitemap in root.findall('ns:sitemap/ns:loc', ns):
-                if sitemap.text:
-                    sitemaps.append(sitemap.text)
+            for ns in namespace_attempts:
+                try:
+                    # Look for sitemap entries first
+                    sitemap_elements = root.findall('.//ns:sitemap/ns:loc', ns) if 'ns' in ns else root.findall('.//sitemap/loc')
+                    if sitemap_elements:
+                        for sitemap in sitemap_elements:
+                            if sitemap.text:
+                                sitemaps.append(sitemap.text)
+                        break
+                    
+                    # If no sitemap entries, look for url entries
+                    url_elements = root.findall('.//ns:url/ns:loc', ns) if 'ns' in ns else root.findall('.//url/loc')
+                    if url_elements:
+                        for url in url_elements:
+                            if url.text:
+                                sitemaps.append(url.text)
+                        break
+                        
+                except Exception as e:
+                    logger.debug(f"Namespace attempt failed: {e}")
+                    continue
             
             if not sitemaps:
-                for url in root.findall('ns:url/ns:loc', ns):
-                    if url.text:
-                        sitemaps.append(url.text)
+                # Last resort: find all loc elements
+                for loc in root.findall('.//loc'):
+                    if loc.text:
+                        sitemaps.append(loc.text)
                 
                 if not sitemaps:
                     sitemaps = [main_sitemap_url]
@@ -111,6 +153,7 @@ class SitemapProcessor:
             
         except Exception as e:
             logger.error(f"Failed to parse sitemap: {e}")
+            # Re-raise for the spider to handle
             raise Exception(f"Failed to parse sitemap {main_sitemap_url}: {e}")
     
     @staticmethod
