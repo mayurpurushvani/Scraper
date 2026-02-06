@@ -36,13 +36,16 @@ jobs:
           PER_JOB=${{ github.event.inputs.sitemaps_per_job }}
           URL="${{ github.event.inputs.website_url }}"
 
+          # Extract domain from URL for filename
+          DOMAIN=$(echo "$URL" | sed -E 's|https?://||;s|/.*||' | sed 's/[^a-zA-Z0-9]/_/g')
+          
           [ "$TOTAL" -eq 0 ] && TOTAL=3
           JOBS=$(( (TOTAL + PER_JOB - 1) / PER_JOB ))
 
           MATRIX="["
           for ((i=0;i<JOBS;i++)); do
             OFFSET=$(( i * PER_JOB ))
-            MATRIX+="{\"offset\":$OFFSET,\"limit\":$PER_JOB,\"url\":\"$URL\"},"
+            MATRIX+="{\"offset\":$OFFSET,\"limit\":$PER_JOB,\"url\":\"$URL\",\"domain\":\"$DOMAIN\"},"
           done
           MATRIX="${MATRIX%,}]"
 
@@ -51,6 +54,7 @@ jobs:
   scrape:
     needs: plan
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     
     strategy:
       fail-fast: false
@@ -84,7 +88,7 @@ jobs:
           
       - name: Run scraper job
         env:
-          CURR_URL: ${{ github.event.inputs.website_url }}
+          CURR_URL: ${{ matrix.url }}
           SITEMAP_OFFSET: ${{ matrix.offset }}
           MAX_SITEMAPS: ${{ matrix.limit }}
           MAX_URLS_PER_SITEMAP: ${{ github.event.inputs.urls_per_sitemap }}
@@ -107,12 +111,23 @@ jobs:
             --job-id "job${{ strategy.job-index }}" \
             --output-dir output
           
-          # Rename output to match pattern - FIXED LINE BELOW
-          mv output/*.csv output/${{ matrix.domain }}_chunk_${{ matrix.offset }}.csv 2>/dev/null || true
-          
-          # Debug: Show what files were created
-          echo "Files in output directory:"
-          ls -la output/
+      - name: Rename output file
+        run: |
+          echo "Renaming output file..."
+          # Check if any CSV files exist in output directory
+          if ls output/*.csv 1> /dev/null 2>&1; then
+            # Get the first CSV file
+            CSV_FILE=$(ls output/*.csv | head -n 1)
+            echo "Found CSV: $CSV_FILE"
+            # Rename it with domain and offset
+            NEW_NAME="output/${{ matrix.domain }}_chunk_${{ matrix.offset }}.csv"
+            mv "$CSV_FILE" "$NEW_NAME"
+            echo "Renamed to: $NEW_NAME"
+          else
+            echo "No CSV files found in output directory"
+            # Create empty file with headers to avoid errors
+            echo "Ref Product URL,Ref Product ID,Ref Varient ID,Ref Category,Ref Category URL,Ref Brand Name,Ref Product Name,Ref SKU,Ref MPN,Ref GTIN,Ref Price,Ref Main Image,Ref Quantity,Ref Group Attr 1,Ref Group Attr 2,Ref Status,Date Scrapped" > "output/${{ matrix.domain }}_chunk_${{ matrix.offset }}.csv"
+          fi
           
       - name: List output files
         run: ls -la output/ || echo "No output directory"
@@ -121,7 +136,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.domain }}_chunk_${{ matrix.offset }}
-          path: output/*.csv
+          path: output/${{ matrix.domain }}_chunk_${{ matrix.offset }}.csv
           retention-days: 1
 
   merge:
