@@ -80,7 +80,7 @@ jobs:
             pip install -r colemanfurniture_scraper/requirements.txt
           else
             echo "No requirements.txt found, installing default packages"
-            pip install scrapy pandas lxml requests
+            pip install scrapy pandas lxml requests beautifulsoup4
           fi
           
       - name: Create output directory

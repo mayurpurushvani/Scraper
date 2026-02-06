@@ -36,14 +36,14 @@ class ProductFetcher(Spider):
         self.base_domain = '.'.join(self.domain.split('.')[-2:]).replace('.', '_')
         
         try:
-            from utils.sitemap_processor import SitemapProcessor
-            self.sitemap_index_url = SitemapProcessor.get_sitemap_from_robots(self.website_url)
+            sitemap_processor = SitemapProcessor()
+            self.sitemap_index_url = sitemap_processor.get_sitemap_from_robots(self.website_url)
             self.logger.info(f"Found sitemap index: {self.sitemap_index_url}")
             
-            self.all_sitemaps = SitemapProcessor.extract_all_sitemaps(self.sitemap_index_url)
+            self.all_sitemaps = sitemap_processor.extract_all_sitemaps(self.sitemap_index_url)
             self.logger.info(f"Total sitemaps discovered: {len(self.all_sitemaps)}")
             
-            self.sitemap_chunk = SitemapProcessor.get_sitemap_chunks(
+            self.sitemap_chunk = sitemap_processor.get_sitemap_chunks(
                 self.all_sitemaps, 
                 self.sitemap_offset, 
                 self.max_sitemaps
