@@ -29,25 +29,16 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
-      timestamp: ${{ steps.timestamp.outputs.timestamp }}
-      date_compact: ${{ steps.timestamp.outputs.date_compact }}
     steps:
-      - id: timestamp
-        run: |
-          TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-          DATE_COMPACT=$(date +%Y%m%d)
-          echo "timestamp=$TIMESTAMP" >> $GITHUB_OUTPUT
-          echo "date_compact=$DATE_COMPACT" >> $GITHUB_OUTPUT
-          
       - id: matrix
         run: |
           TOTAL=${{ github.event.inputs.total_sitemaps }}
           PER_JOB=${{ github.event.inputs.sitemaps_per_job }}
           URL="${{ github.event.inputs.website_url }}"
-          
-          # Extract clean domain name for filename (colemanfurniture)
-          DOMAIN=$(echo "$URL" | sed -E 's|https?://||;s|www\.||;s|\..*||' | tr -cd '[:alnum:]')
 
+          # Extract domain from URL for filename
+          DOMAIN=$(echo "$URL" | sed -E 's|https?://||;s|/.*||' | sed 's/[^a-zA-Z0-9]/_/g')
+          
           [ "$TOTAL" -eq 0 ] && TOTAL=3
           JOBS=$(( (TOTAL + PER_JOB - 1) / PER_JOB ))
 
@@ -123,22 +114,19 @@ jobs:
       - name: Rename output file
         run: |
           echo "Renaming output file..."
-          TIMESTAMP="${{ needs.plan.outputs.timestamp }}"
-          DOMAIN="${{ matrix.domain }}"
-          
           # Check if any CSV files exist in output directory
           if ls output/*.csv 1> /dev/null 2>&1; then
             # Get the first CSV file
             CSV_FILE=$(ls output/*.csv | head -n 1)
             echo "Found CSV: $CSV_FILE"
-            # Rename it with your format: domain_YYYYMMDD_HHMMSS_chunk_OFFSET.csv
-            NEW_NAME="output/${DOMAIN}_${TIMESTAMP}_chunk_${MATRIX_OFFSET}.csv"
+            # Rename it with domain and offset
+            NEW_NAME="output/${{ matrix.domain }}_chunk_${{ matrix.offset }}.csv"
             mv "$CSV_FILE" "$NEW_NAME"
             echo "Renamed to: $NEW_NAME"
           else
             echo "No CSV files found in output directory"
             # Create empty file with headers to avoid errors
-            echo "Ref Product URL,Ref Product ID,Ref Varient ID,Ref Category,Ref Category URL,Ref Brand Name,Ref Product Name,Ref SKU,Ref MPN,Ref GTIN,Ref Price,Ref Main Image,Ref Quantity,Ref Group Attr 1,Ref Group Attr 2,Ref Status,Date Scrapped" > "output/${DOMAIN}_${TIMESTAMP}_chunk_${MATRIX_OFFSET}.csv"
+            echo "Ref Product URL,Ref Product ID,Ref Varient ID,Ref Category,Ref Category URL,Ref Brand Name,Ref Product Name,Ref SKU,Ref MPN,Ref GTIN,Ref Price,Ref Main Image,Ref Quantity,Ref Group Attr 1,Ref Group Attr 2,Ref Status,Date Scrapped" > "output/${{ matrix.domain }}_chunk_${{ matrix.offset }}.csv"
           fi
           
       - name: List output files
@@ -147,8 +135,8 @@ jobs:
       - name: Upload chunk artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${DOMAIN}_${TIMESTAMP}_chunk_${MATRIX_OFFSET}
-          path: output/${DOMAIN}_${TIMESTAMP}_chunk_${MATRIX_OFFSET}.csv
+          name: ${{ matrix.domain }}_chunk_${{ matrix.offset }}
+          path: output/${{ matrix.domain }}_chunk_${{ matrix.offset }}.csv
           retention-days: 1
 
   merge:
@@ -201,16 +189,16 @@ jobs:
           # Extract domain from first CSV filename
           FIRST_CSV=$(find chunks -name "*.csv" -type f | head -n 1)
           if [ -n "$FIRST_CSV" ]; then
-            # Extract domain from filename pattern: domain_YYYYMMDD_HHMMSS_chunk_0.csv
+            # Extract domain from filename pattern: domain_chunk_0.csv
             DOMAIN=$(basename "$FIRST_CSV" | cut -d'_' -f1)
           else
             # Fallback to input URL
             URL="${{ github.event.inputs.website_url }}"
-            DOMAIN=$(echo "$URL" | sed -E 's|https?://||;s|www\.||;s|\..*||' | tr -cd '[:alnum:]')
+            DOMAIN=$(echo "$URL" | sed -E 's|https?://||;s|/.*||' | sed 's/[^a-zA-Z0-9]/_/g')
           fi
           
-          TIMESTAMP="${{ needs.plan.outputs.timestamp }}"
-          FILENAME="${DOMAIN}_${TIMESTAMP}.csv"
+          DATE=$(date +%F)
+          FILENAME="${DOMAIN}_${DATE}.csv"
           echo "name=$FILENAME" >> $GITHUB_OUTPUT
           echo "Generated filename: $FILENAME"
           
@@ -237,7 +225,7 @@ jobs:
           # Install lftp
           sudo apt-get update && sudo apt-get install -y lftp
           
-          # Upload file with timestamp to prevent overwriting
+          # Upload file
           lftp -u "$FTP_USER","$FTP_PASS" "$FTP_HOST" <<EOF
           set ftp:ssl-allow no
           set ssl:verify-certificate no
@@ -248,7 +236,7 @@ jobs:
           bye
           EOF
           
-          echo "File uploaded successfully: $FILE"
+          echo "✅ File uploaded successfully: $FILE"
           
       - name: Cleanup
         if: always()
