@@ -154,7 +154,17 @@ class ProductFetcher(Spider):
         item['Ref Variant ID'] = self.extract_variant_id(response)
         item['Ref Group Attr 1'] = self.extract_group_attr1(response, 1)
         item['Ref Group Attr 2'] = self.extract_group_attr2(response, 2)
-        
+        thumbnail_urls = self.extract_thumbnail_images(response)
+        item['Ref Thumbnail Images'] = '\n'.join(thumbnail_urls) if thumbnail_urls else ''
+        item['Ref Dimensions'] = self.extract_dimensions(response)
+        highlights = self.extract_highlights(response)
+        for i in range(1, 15):
+            if i <= len(highlights):
+                item[f'Highlight Header {i}'] = highlights[i-1]['title']
+                item[f'Highlight Description {i}'] = highlights[i-1]['desc']
+            else:
+                item[f'Highlight Header {i}'] = ''
+                item[f'Highlight Description {i}'] = ''
         yield item
        
     def extract_product_name(self, response):
@@ -309,7 +319,55 @@ class ProductFetcher(Spider):
                 if cleaned:
                     return cleaned
         return ''
+
+    def extract_highlights(self, response):
+        highlights = []
+        highlight_items = response.xpath('//div[contains(@class, "product-hightlights-items-item")]')       
+        for item in highlight_items:
+            title = item.xpath('.//span[contains(@class, "product-hightlights-items-item-title")]/text()').get()
+            desc = item.xpath('.//p[contains(@class, "product-hightlights-items-item-desc")]/text()').get()
+            if title:
+                highlights.append({
+                    'title': title.strip() if title else '',
+                    'desc': desc.strip() if desc else ''
+                })
+        return highlights
     
+    def extract_thumbnail_images(self, response):
+        thumbnail_urls = []
+        thumb_images = response.xpath('//img[contains(@class, "image-gallery-thumbnail-image")]/@src').getall()
+        
+        if not thumb_images:
+            thumb_images = response.xpath('//div[contains(@class, "image-gallery-thumbnails")]//img/@src').getall()
+        
+        if not thumb_images:
+            thumb_images = response.xpath('//button[contains(@class, "image-gallery-thumbnail")]//img/@src').getall()
+        
+        seen = set()
+        for url in thumb_images:
+            if url and url.strip():
+                clean_url = url.strip()
+                if clean_url not in seen:
+                    seen.add(clean_url)
+                    thumbnail_urls.append(clean_url)
+        
+        return thumbnail_urls
+
+    def extract_dimensions(self, response):
+        dimension_lines = []
+        dimensions_section = response.xpath('//li[contains(@class, "accordion-item") and .//h2[contains(text(), "Dimensions")]]')
+        if dimensions_section:
+            dim_tables = dimensions_section.xpath('.//div[contains(@class, "product-dimensions")]//div[contains(@class, "product-info-table")]')
+            for table in dim_tables:
+                item_name = table.xpath('.//div[contains(@class, "spec-title")]/text()').get('')
+                dimension_value = table.xpath('.//div[contains(@class, "spec-value")]/text()').get('')
+                if item_name and dimension_value:
+                    item_name = item_name.strip()
+                    dimension_value = dimension_value.strip()
+                    if item_name and dimension_value:
+                        dimension_lines.append(f"Key: {item_name}, Value: {dimension_value}")
+        return '\n'.join(dimension_lines)
+
     def clean_price(self, price_text):
         if not price_text:
             return ''
