@@ -154,17 +154,9 @@ class ProductFetcher(Spider):
         item['Ref Variant ID'] = self.extract_variant_id(response)
         item['Ref Group Attr 1'] = self.extract_group_attr1(response, 1)
         item['Ref Group Attr 2'] = self.extract_group_attr2(response, 2)
-        thumbnail_urls = self.extract_thumbnail_images(response)
-        item['Ref Thumbnail Images'] = '\n'.join(thumbnail_urls) if thumbnail_urls else ''
+        item['Ref Images'] = self.extract_main_images(response)
+        item['Ref Highlights'] = self.extract_highlights(response)
         item['Ref Dimensions'] = self.extract_dimensions(response)
-        highlights = self.extract_highlights(response)
-        for i in range(1, 15):
-            if i <= len(highlights):
-                item[f'Highlight Header {i}'] = highlights[i-1]['title']
-                item[f'Highlight Description {i}'] = highlights[i-1]['desc']
-            else:
-                item[f'Highlight Header {i}'] = ''
-                item[f'Highlight Description {i}'] = ''
         yield item
        
     def extract_product_name(self, response):
@@ -331,43 +323,181 @@ class ProductFetcher(Spider):
                     'title': title.strip() if title else '',
                     'desc': desc.strip() if desc else ''
                 })
-        return highlights
+        json_output = json.dumps(highlights, indent=2)
+        return json_output
     
-    def extract_thumbnail_images(self, response):
-        thumbnail_urls = []
-        thumb_images = response.xpath('//img[contains(@class, "image-gallery-thumbnail-image")]/@src').getall()
-        
-        if not thumb_images:
-            thumb_images = response.xpath('//div[contains(@class, "image-gallery-thumbnails")]//img/@src').getall()
-        
-        if not thumb_images:
-            thumb_images = response.xpath('//button[contains(@class, "image-gallery-thumbnail")]//img/@src').getall()
-        
-        seen = set()
-        for url in thumb_images:
-            if url and url.strip():
-                clean_url = url.strip()
-                if clean_url not in seen:
-                    seen.add(clean_url)
-                    thumbnail_urls.append(clean_url)
-        
-        return thumbnail_urls
+    def extract_main_images(self, response):
+        image_urls = []
+        json_script = response.xpath('//script[@data-hypernova-key="App"]/text()').get()
+        if json_script:
+            json_script = json_script.strip()
+            if json_script.startswith('<!--'):
+                json_script = json_script[4:]
+            if json_script.endswith('-->'):
+                json_script = json_script[:-3]
+            json_script = json_script.strip()
+            try:
+                data = json.loads(json_script)
+                main_data = data.get('data', {})
+                content = main_data.get('content', {})
+                gallery = content.get('gallery', [])
+                if isinstance(gallery, list):
+                    for img in gallery:
+                        if isinstance(img, dict):
+                            original_url = img.get('original')
+                            if original_url:
+                                image_urls.append(original_url)
+            except Exception as e:
+                self.logger.error(f"Failed to extract images: {e}")
+                raise
+        return '\n'.join(image_urls) if image_urls else ''
 
     def extract_dimensions(self, response):
-        dimension_lines = []
-        dimensions_section = response.xpath('//li[contains(@class, "accordion-item") and .//h2[contains(text(), "Dimensions")]]')
-        if dimensions_section:
-            dim_tables = dimensions_section.xpath('.//div[contains(@class, "product-dimensions")]//div[contains(@class, "product-info-table")]')
-            for table in dim_tables:
-                item_name = table.xpath('.//div[contains(@class, "spec-title")]/text()').get('')
-                dimension_value = table.xpath('.//div[contains(@class, "spec-value")]/text()').get('')
-                if item_name and dimension_value:
-                    item_name = item_name.strip()
-                    dimension_value = dimension_value.strip()
-                    if item_name and dimension_value:
-                        dimension_lines.append(f"Key: {item_name}, Value: {dimension_value}")
-        return '\n'.join(dimension_lines)
+        json_script = response.xpath('//script[@data-hypernova-key="App"]/text()').get()
+        if not json_script:
+            return ''
+        
+        json_script = json_script.strip()
+        if json_script.startswith('<!--'):
+            json_script = json_script[4:]
+        if json_script.endswith('-->'):
+            json_script = json_script[:-3]
+        json_script = json_script.strip()
+        
+        try:
+            data = json.loads(json_script)
+            content = data.get('data', {}).get('content', {})
+            setIncludes = content.get('setIncludes', {})
+            
+            result = {}
+            
+            items = setIncludes.get('items', [])
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                
+                item_short_name = item.get('itemShortName', '')
+                dimension = item.get('dimension', {})
+                image_url = dimension.get('image', {}).get('url', '') if isinstance(dimension.get('image'), dict) else ''
+                if image_url and not self.is_valid_image_url(image_url):
+                    image_url = ''
+                dimensions_list = dimension.get('list', [])
+                
+                dimension_data = []
+                for dim in dimensions_list:
+                    if dim and isinstance(dim, str):
+                        dimension_data.append(dim)
+                
+                if item_short_name:
+                    result[item_short_name.lower()] = {
+                        "url": image_url,
+                        "data": dimension_data if dimension_data else []
+                    }
+            
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                
+                configurables = item.get('configurables', [])
+                for config in configurables:
+                    if not isinstance(config, dict):
+                        continue
+                    
+                    options = config.get('options', [])
+                    for option in options:
+                        if not isinstance(option, dict):
+                            continue
+                        
+                        item_short_name = option.get('itemShortName', '')
+                        dimension = option.get('dimension', {})
+                        image_url = dimension.get('image', {}).get('url', '') if isinstance(dimension.get('image'), dict) else ''
+                        if image_url and not self.is_valid_image_url(image_url):
+                            image_url = ''
+                        dimensions_list = dimension.get('list', [])
+                        
+                        dimension_data = []
+                        for dim in dimensions_list:
+                            if dim and isinstance(dim, str):
+                                dimension_data.append(dim)
+                        
+                        if item_short_name:
+                            result[item_short_name.lower()] = {
+                                "url": image_url,
+                                "data": dimension_data if dimension_data else []
+                            }
+            
+            additional_items_data = content.get('additionalItems', {})
+            if isinstance(additional_items_data, dict):
+                additional_items = additional_items_data.get('items', [])
+                for item in additional_items:
+                    if not isinstance(item, dict):
+                        continue
+                    
+                    item_short_name = item.get('itemShortName', '')
+                    dimension = item.get('dimension', {})
+                    image_url = dimension.get('image', {}).get('url', '') if isinstance(dimension.get('image'), dict) else ''
+                    if image_url and not self.is_valid_image_url(image_url):
+                        image_url = ''
+                    dimensions_list = dimension.get('list', [])
+                    
+                    # Get dimension text
+                    dimension_data = []
+                    for dim in dimensions_list:
+                        if dim and isinstance(dim, str):
+                            dimension_data.append(dim)
+                    
+                    # Only add if we have itemShortName
+                    if item_short_name:
+                        result[item_short_name.lower()] = {
+                            "url": image_url,
+                            "data": dimension_data if dimension_data else []
+                        }
 
+            if not result:
+                accordion_data = content.get('accordion', {})
+                dimensions_data = accordion_data.get('dimensions', {})
+                
+                if dimensions_data and isinstance(dimensions_data, dict):
+                    dimension_list = dimensions_data.get('dimensionList', [])
+                    
+                    image_url = dimensions_data.get('image', {}).get('url', '') if isinstance(dimensions_data.get('image'), dict) else ''
+                    if image_url and not self.is_valid_image_url(image_url):
+                        image_url = ''
+                    
+                    dimension_data = []
+                    for dim in dimension_list:
+                        if dim and isinstance(dim, str):
+                            dimension_data.append(dim)
+                    
+                    if dimension_data:
+                        result["dimensions"] = {
+                            "url": image_url,
+                            "data": dimension_data
+                        }
+            if result:
+                return json.dumps(result, indent=2)
+            return ''
+            
+        except Exception as e:
+            self.logger.error(f"Error extracting dimensions: {e}")
+            return ''
+
+    def is_valid_image_url(self, url):
+        if not url or not isinstance(url, str):
+            return False
+        
+        image_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.bmp']
+        url_lower = url.lower()
+        
+        if not (url_lower.startswith('http://') or url_lower.startswith('https://')):
+            return False
+        
+        if not any(url_lower.endswith(ext) for ext in image_extensions):
+            if not any(ext in url_lower for ext in image_extensions):
+                return False
+        
+        return True
+        
     def clean_price(self, price_text):
         if not price_text:
             return ''
