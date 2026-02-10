@@ -74,6 +74,7 @@ def main():
         'Ref Highlights',
         'Date Scrapped'
     ])
+    settings.set('DUPEFILTER_CLASS', 'scrapy.dupefilters.RFPDupeFilter')
     process = CrawlerProcess(settings)
     
     logger.info(f"Starting scraper for: {args.website_url}")

@@ -47,7 +47,7 @@ jobs:
   scrape:
     needs: plan
     runs-on: ubuntu-22.04
-    timeout-minutes: 120
+
     env:
       DISPLAY: :99
       LD_LIBRARY_PATH: /usr/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu/libproxy

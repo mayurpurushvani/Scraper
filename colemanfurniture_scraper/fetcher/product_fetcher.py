@@ -21,6 +21,8 @@ class ProductFetcher(Spider):
     
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.seen_urls = set()
+        self.seen_skus = set()
         
         self.website_url = kwargs.get('website_url')
         if not self.website_url:
@@ -89,6 +91,10 @@ class ProductFetcher(Spider):
         pdp_count = 0
         
         for url in all_urls:
+            if url in self.seen_urls:
+                self.logger.info(f"Skipping duplicate URL: {url}")
+                continue
+            self.seen_urls.add(url)
             if self._is_plp_url(url):
                 plp_count += 1
                 continue
@@ -107,7 +113,7 @@ class ProductFetcher(Spider):
         path = parsed_url.path.strip('/')
         
         if not path:
-            return False       
+            return True
         return '/' in path
 
     def parse_product_page_with_check(self, response):
@@ -131,17 +137,64 @@ class ProductFetcher(Spider):
                 continue
         
         if has_product_json:
-            yield from self.parse_product_page(response)
+            items = list(self.parse_product_page(response))
+            yield from self.extract_bundle_products(response, items[0] if items else None)
         else:
             return
     
+    def extract_bundle_products(self, response, main_item):
+        if main_item:
+            yield main_item
+        json_script = response.xpath('//script[@data-hypernova-key="App"]/text()').get()
+        if not json_script:
+            return
+        try:
+            json_script = json_script.strip()
+            if json_script.startswith('<!--'):
+                json_script = json_script[4:]
+            if json_script.endswith('-->'):
+                json_script = json_script[:-3]
+            json_script = json_script.strip()
+            data = json.loads(json_script)
+            content = data.get('data', {}).get('content', {})
+            product_layouts = content.get('productLayouts', {})
+            simple_items = product_layouts.get('simpleItems', [])
+            for item in simple_items:
+                if isinstance(item, dict):
+                    sub_product_url = item.get('url')
+                    item_short_name = item.get('itemShortName', '')
+                    if not sub_product_url or sub_product_url == response.url:
+                        self.logger.info(f"Skipping self-reference or empty URL: {sub_product_url}")
+                        continue
+                    if sub_product_url in self.seen_urls:
+                        self.logger.info(f"Skipping duplicate URL: {sub_product_url}")
+                        continue
+                    self.seen_urls.add(sub_product_url)
+                    self.logger.info(f"Found unique sub-product: {item_short_name}")
+                    yield Request(
+                        sub_product_url,
+                        callback=self.parse_product_page_with_check,
+                        meta={'url': sub_product_url},
+                        errback=self.handle_product_error
+                    )
+        except Exception as e:
+            self.logger.error(f"Error extracting bundle products: {e}")
+
     def parse_product_page(self, response):
         item = {}
+
+        sku = self.extract_sku(response)
+        if sku and sku in self.seen_skus:
+            self.logger.info(f"Skipping duplicate product with SKU: {sku}")
+            return
+        if sku:
+            self.seen_skus.add(sku)
+
         item['Ref Product URL'] = response.url
+        item['Ref SKU'] = sku
         item['Date Scrapped'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         item['Ref Product Name'] = self.extract_product_name(response)
         item['Ref Price'] = self.extract_price(response)
-        item['Ref SKU'] = self.extract_sku(response)
         item['Ref MPN'] = self.extract_mpn(response)
         item['Ref GTIN'] = self.extract_gtin(response)
         item['Ref Brand Name'] = self.extract_brand(response)
@@ -169,7 +222,7 @@ class ProductFetcher(Spider):
         for script in response.xpath('//script[@type="application/ld+json"]/text()').getall():
             try:
                 data = json.loads(script)
-                if data.get('@type') == 'Product':
+                if data.get('@type') == 'Product' or data.get('@type') == 'ProductGroup':
                     offers = data.get('offers', {})
                     if isinstance(offers, dict) and 'price' in offers:
                         return str(offers['price'])
@@ -181,7 +234,7 @@ class ProductFetcher(Spider):
         for script in response.xpath('//script[@type="application/ld+json"]/text()').getall():
             try:
                 data = json.loads(script)
-                if data.get('@type') == 'Product':
+                if data.get('@type') == 'Product' or data.get('@type') == 'ProductGroup':
                     return data.get('sku', '')
             except:
                 continue
@@ -190,7 +243,7 @@ class ProductFetcher(Spider):
         for script in response.xpath('//script[@type="application/ld+json"]/text()').getall():
             try:
                 data = json.loads(script)
-                if data.get('@type') == 'Product':
+                if data.get('@type') == 'Product' or data.get('@type') == 'ProductGroup':
                     return data.get('mpn', '')
             except:
                 continue
@@ -202,7 +255,7 @@ class ProductFetcher(Spider):
         for script in response.xpath('//script[@type="application/ld+json"]/text()').getall():
             try:
                 data = json.loads(script)
-                if data.get('@type') == 'Product':
+                if data.get('@type') == 'Product' or data.get('@type') == 'ProductGroup':
                     brand = data.get('brand', {})
                     if isinstance(brand, dict):
                         return brand.get('name', '')
@@ -216,7 +269,7 @@ class ProductFetcher(Spider):
         for script in response.xpath('//script[@type="application/ld+json"]/text()').getall():
             try:
                 data = json.loads(script)
-                if data.get('@type') == 'Product':
+                if data.get('@type') == 'Product' or data.get('@type') == 'ProductGroup':
                     return data.get('image', '')
             except:
                 continue
@@ -264,7 +317,7 @@ class ProductFetcher(Spider):
         for script in response.xpath('//script[@type="application/ld+json"]/text()').getall():
             try:
                 data = json.loads(script)
-                if data.get('@type') == 'Product':
+                if data.get('@type') == 'Product' or data.get('@type') == 'ProductGroup':
                     offers = data.get('offers', {})
                     if isinstance(offers, dict):
                         availability = str(offers.get('availability', '')).lower()
@@ -291,7 +344,7 @@ class ProductFetcher(Spider):
         for script in response.xpath('//script[@type="application/ld+json"]/text()').getall():
             try:
                 data = json.loads(script)
-                if data.get('@type') == 'Product':
+                if data.get('@type') == 'Product' or data.get('@type') == 'ProductGroup':
                     return data.get('color', '')
             except:
                 continue
@@ -447,6 +500,29 @@ class ProductFetcher(Spider):
                             dimension_data.append(dim)
                     
                     # Only add if we have itemShortName
+                    if item_short_name:
+                        result[item_short_name.lower()] = {
+                            "url": image_url,
+                            "data": dimension_data if dimension_data else []
+                        }
+
+            simpleItems = content.get('productLayouts', {}).get('simpleItems', {})
+            if isinstance(simpleItems, list):
+                for item in simpleItems:
+                    if not isinstance(item, dict):
+                        continue
+                    item_short_name = item.get('itemShortName', '')
+                    dimension = item.get('dimension', {})
+                    image_url = dimension.get('image', {}).get('url', '') if isinstance(dimension.get('image'), dict) else ''
+                    if image_url and not self.is_valid_image_url(image_url):
+                        image_url = ''
+                    dimensions_list = dimension.get('list', [])
+                    
+                    dimension_data = []
+                    for dim in dimensions_list:
+                        if dim and isinstance(dim, str):
+                            dimension_data.append(dim)
+                    
                     if item_short_name:
                         result[item_short_name.lower()] = {
                             "url": image_url,
