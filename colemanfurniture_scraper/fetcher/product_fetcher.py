@@ -22,7 +22,7 @@ class ProductFetcher(Spider):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.seen_urls = set()
-        self.seen_skus = set()
+        # self.seen_skus = set()
         
         self.website_url = kwargs.get('website_url')
         if not self.website_url:
@@ -89,7 +89,7 @@ class ProductFetcher(Spider):
         
         plp_count = 0
         pdp_count = 0
-        
+
         for url in all_urls:
             if url in self.seen_urls:
                 self.logger.info(f"Skipping duplicate URL: {url}")
@@ -137,14 +137,12 @@ class ProductFetcher(Spider):
                 continue
         
         if has_product_json:
-            items = list(self.parse_product_page(response))
-            yield from self.extract_bundle_products(response, items[0] if items else None)
+            yield from self.parse_product_page(response)
+            yield from self.extract_bundle_products(response)
         else:
             return
     
-    def extract_bundle_products(self, response, main_item):
-        if main_item:
-            yield main_item
+    def extract_bundle_products(self, response):
         json_script = response.xpath('//script[@data-hypernova-key="App"]/text()').get()
         if not json_script:
             return
@@ -184,11 +182,11 @@ class ProductFetcher(Spider):
         item = {}
 
         sku = self.extract_sku(response)
-        if sku and sku in self.seen_skus:
-            self.logger.info(f"Skipping duplicate product with SKU: {sku}")
-            return
-        if sku:
-            self.seen_skus.add(sku)
+        # if sku and sku in self.seen_skus:
+        #     self.logger.info(f"Skipping duplicate product with SKU: {sku}")
+        #     return
+        # if sku:
+        #     self.seen_skus.add(sku)
 
         item['Ref Product URL'] = response.url
         item['Ref SKU'] = sku
