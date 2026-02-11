@@ -21,8 +21,6 @@ class ProductFetcher(Spider):
     
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.seen_urls = set()
-        # self.seen_skus = set()
         
         self.website_url = kwargs.get('website_url')
         if not self.website_url:
@@ -63,7 +61,7 @@ class ProductFetcher(Spider):
             return
         
         self.logger.info(f"Starting to process {len(self.sitemap_chunk)} sitemaps")
-        
+
         for sitemap_url in self.sitemap_chunk:
             yield Request(
                 sitemap_url,
@@ -91,10 +89,6 @@ class ProductFetcher(Spider):
         pdp_count = 0
 
         for url in all_urls:
-            if url in self.seen_urls:
-                self.logger.info(f"Skipping duplicate URL: {url}")
-                continue
-            self.seen_urls.add(url)
             if self._is_plp_url(url):
                 plp_count += 1
                 continue
@@ -119,28 +113,46 @@ class ProductFetcher(Spider):
     def parse_product_page_with_check(self, response):
         json_scripts = response.xpath('//script[@type="application/ld+json"]/text()').getall()
         has_product_json = False
-        
         for script in json_scripts:
             try:
                 data = json.loads(script.strip())
-                if isinstance(data, dict) and data.get('@type') == 'Product':
-                    has_product_json = True
-                    break
+                if isinstance(data, dict):
+                    data_type = data.get('@type')
+                    if data_type:
+                        if isinstance(data_type, str):
+                            if 'Product' in data_type:
+                                has_product_json = True
+                                break
+                        elif isinstance(data_type, list):
+                            if any('Product' in str(t) for t in data_type):
+                                has_product_json = True
+                                break
+                    elif data.get('name') and (data.get('offers') or data.get('sku')):
+                        has_product_json = True
+                        break
                 elif isinstance(data, list):
                     for item in data:
-                        if isinstance(item, dict) and item.get('@type') == 'Product':
-                            has_product_json = True
-                            break
+                        if isinstance(item, dict):
+                            item_type = item.get('@type')
+                            if item_type:
+                                if isinstance(item_type, str) and 'Product' in item_type:
+                                    has_product_json = True
+                                    break
+                                elif isinstance(item_type, list) and any('Product' in str(t) for t in item_type):
+                                    has_product_json = True
+                                    break
                     if has_product_json:
                         break
-            except:
+            except Exception as e:
+                self.logger.debug(f"Error parsing JSON-LD: {e}")
                 continue
-        
         if has_product_json:
+            self.logger.info(f"Found Product JSON-LD for {response.url}")
             yield from self.parse_product_page(response)
             yield from self.extract_bundle_products(response)
         else:
-            return
+            self.logger.warning(f"No Product JSON-LD found for {response.url}")
+            yield from self.parse_product_page(response)
     
     def extract_bundle_products(self, response):
         json_script = response.xpath('//script[@data-hypernova-key="App"]/text()').get()
@@ -164,10 +176,6 @@ class ProductFetcher(Spider):
                     if not sub_product_url or sub_product_url == response.url:
                         self.logger.info(f"Skipping self-reference or empty URL: {sub_product_url}")
                         continue
-                    if sub_product_url in self.seen_urls:
-                        self.logger.info(f"Skipping duplicate URL: {sub_product_url}")
-                        continue
-                    self.seen_urls.add(sub_product_url)
                     self.logger.info(f"Found unique sub-product: {item_short_name}")
                     yield Request(
                         sub_product_url,
@@ -182,12 +190,6 @@ class ProductFetcher(Spider):
         item = {}
 
         sku = self.extract_sku(response)
-        # if sku and sku in self.seen_skus:
-        #     self.logger.info(f"Skipping duplicate product with SKU: {sku}")
-        #     return
-        # if sku:
-        #     self.seen_skus.add(sku)
-
         item['Ref Product URL'] = response.url
         item['Ref SKU'] = sku
         item['Date Scrapped'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -491,13 +493,11 @@ class ProductFetcher(Spider):
                         image_url = ''
                     dimensions_list = dimension.get('list', [])
                     
-                    # Get dimension text
                     dimension_data = []
                     for dim in dimensions_list:
                         if dim and isinstance(dim, str):
                             dimension_data.append(dim)
                     
-                    # Only add if we have itemShortName
                     if item_short_name:
                         result[item_short_name.lower()] = {
                             "url": image_url,
