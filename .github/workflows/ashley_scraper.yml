@@ -36,7 +36,7 @@ on:
 jobs:
   # JOB 1: Collect URLs in parallel chunks
   collect_urls:
-    if: ${{ !github.event.inputs.scrape_only }}
+  if: ${{ github.event.inputs.scrape_only == 'false' }}
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
