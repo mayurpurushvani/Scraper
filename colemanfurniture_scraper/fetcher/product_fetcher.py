@@ -58,10 +58,7 @@ class ProductFetcher(Spider):
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0',
             'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15',
         ]
-        
-        # Bundle URL deduplication
-        self._processed_bundle_urls = set()
-        
+               
         # Log chunk info if in chunk mode
         if self.chunk_mode:
             self.logger.info(f"📦 Chunk {self.chunk_id + 1}/{self.total_chunks} initialized for {self.website_url}")
@@ -508,9 +505,6 @@ class ProductFetcher(Spider):
                 script = script[:-3]
             script = script.strip()
             
-            if not script:
-                return
-            
             data = json.loads(script)
             simple_items = data.get('data', {}).get('content', {}).get('productLayouts', {}).get('simpleItems', [])
             
@@ -523,11 +517,9 @@ class ProductFetcher(Spider):
                     sub_product_url = sub_product_url.strip()
                     
                     # Skip if same as parent or already processed
-                    if sub_product_url == response.url or sub_product_url in self._processed_bundle_urls:
+                    if sub_product_url == response.url:
                         continue
-                    
-                    self._processed_bundle_urls.add(sub_product_url)
-                    
+                                        
                     self.logger.info(f"Found bundle product: {sub_product_url}")
                     yield Request(
                         sub_product_url,
