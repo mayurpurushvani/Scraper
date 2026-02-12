@@ -8,10 +8,11 @@ from scrapy.crawler import CrawlerProcess
 from scrapy.utils.project import get_project_settings
 from fetcher.product_fetcher import ProductFetcher
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+# logging.basicConfig(
+#     level=logging.INFO,
+#     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+# )
+logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
 
 def main():
@@ -22,7 +23,7 @@ def main():
     sitemap_offset = os.getenv('SITEMAP_OFFSET', '0')
     max_sitemaps = os.getenv('MAX_SITEMAPS', '0')
     max_urls_per_sitemap = os.getenv('MAX_URLS_PER_SITEMAP', '0')
-    max_workers = os.getenv('MAX_WORKERS', '16')
+    max_workers = os.getenv('MAX_WORKERS', '32')
     job_id = os.getenv('GITHUB_JOB', '')
     parser.add_argument('--sitemap-offset', type=int, default=int(sitemap_offset),
                        help='Offset for sitemap processing')
