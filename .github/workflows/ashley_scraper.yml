@@ -21,8 +21,12 @@ on:
         default: "20"
         type: number
       product_concurrency:
-        description: "Concurrent product requests per job"
-        default: "32"
+        description: "Concurrent product requests per chunk"
+        default: "12"
+        type: number
+      product_chunks:
+        description: "Number of parallel product scraping chunks"
+        default: "8"
         type: number
       scrape_only:
         description: "Only scrape products (skip URL collection)"
@@ -70,10 +74,10 @@ jobs:
           PER_JOB=${{ github.event.inputs.pages_per_job }}
           MANUFACTURER_ID="${{ github.event.inputs.manufacturer_id }}"
           
-          # If total pages is 0, set to reasonable default (Ashley has ~150 pages)
+          # Ashley has ~150-200 pages
           [ "$TOTAL" -eq 0 ] && TOTAL=150
           
-            # Calculate number of jobs
+          # Calculate number of jobs
           JOBS=$(( (TOTAL + PER_JOB - 1) / PER_JOB ))
           
           # Create matrix for parallel jobs
@@ -225,7 +229,7 @@ jobs:
           path: output/ashley_urls_complete_*.json
           retention-days: 7
 
-  # JOB 4: Scrape products in parallel chunks
+  # JOB 4: Scrape products in OPTIMIZED PARALLEL CHUNKS
   scrape_products:
     needs: [merge_urls, collect_urls]
     if: ${{ always() && (github.event.inputs.scrape_only == 'true' || needs.merge_urls.result == 'success') }}
@@ -233,8 +237,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        chunk_id: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]  # 10 parallel chunks
-        total_chunks: [20]
+        chunk_id: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+        total_chunks: [16]
         
     steps:
       - uses: actions/checkout@v4
@@ -269,31 +273,41 @@ jobs:
               rm -rf url_chunks
             fi
             gh run download ${{ github.run_id }} -n ashley_urls_complete -D url_chunks
-            URLS_FILE=$(find url_chunks -name "*.json" -type f | head -n 1)
-            echo "file=$URLS_FILE" >> $GITHUB_OUTPUT
+            COMPLETE_FILE=$(find url_chunks -name "*.json" -type f | head -n 1)
+            echo "file=$COMPLETE_FILE" >> $GITHUB_OUTPUT
           fi
         env:
           GH_TOKEN: ${{ github.token }}
           
-      - name: Split URLs into chunks
+      - name: Calculate optimal chunk size
+        id: chunk_calc
         run: |
           URLS_FILE="${{ steps.urls_file.outputs.file }}"
-          CHUNK_ID=${{ matrix.chunk_id }}
           TOTAL_CHUNKS=${{ matrix.total_chunks }}
+          CHUNK_ID=${{ matrix.chunk_id }}
           
-          echo "Splitting URLs - Chunk $CHUNK_ID of $TOTAL_CHUNKS"
-          
-          # Load all URLs
+          # Get total URLs
           TOTAL_URLS=$(jq '.urls | length' "$URLS_FILE")
+          
+          # Calculate chunk size (round up)
           CHUNK_SIZE=$(( (TOTAL_URLS + TOTAL_CHUNKS - 1) / TOTAL_CHUNKS ))
           
           START_IDX=$(( CHUNK_ID * CHUNK_SIZE ))
           END_IDX=$(( START_IDX + CHUNK_SIZE ))
           
-          echo "Total URLs: $TOTAL_URLS"
-          echo "Chunk size: $CHUNK_SIZE"
-          echo "Start index: $START_IDX"
-          echo "End index: $END_IDX"
+          echo "total_urls=$TOTAL_URLS" >> $GITHUB_OUTPUT
+          echo "chunk_size=$CHUNK_SIZE" >> $GITHUB_OUTPUT
+          echo "start_idx=$START_IDX" >> $GITHUB_OUTPUT
+          echo "end_idx=$END_IDX" >> $GITHUB_OUTPUT
+          
+      - name: Extract chunk URLs
+        run: |
+          URLS_FILE="${{ steps.urls_file.outputs.file }}"
+          CHUNK_ID=${{ matrix.chunk_id }}
+          START_IDX=${{ steps.chunk_calc.outputs.start_idx }}
+          END_IDX=${{ steps.chunk_calc.outputs.end_idx }}
+          
+          echo "Chunk $CHUNK_ID: URLs $START_IDX to $END_IDX"
           
           # Extract chunk URLs
           jq --argjson start "$START_IDX" --argjson end "$END_IDX" \
@@ -303,20 +317,24 @@ jobs:
           CHUNK_COUNT=$(jq '.urls | length' "output/chunk_${CHUNK_ID}.json")
           echo "Chunk $CHUNK_ID contains $CHUNK_COUNT URLs"
           
+          # Skip if no URLs
+          if [ "$CHUNK_COUNT" -eq 0 ]; then
+            echo "No URLs in chunk $CHUNK_ID, creating empty output"
+            echo "Ref Product URL,Ref Product ID,Ref Variant ID,Ref Category,Ref Category URL,Ref Brand Name,Ref Product Name,Ref SKU,Ref MPN,Ref GTIN,Ref Price,Ref Main Image,Ref Quantity,Ref Group Attr 1,Ref Group Attr 2,Ref Images,Ref Dimensions,Ref Status,Ref Highlights,Date Scrapped" > "output/ashley_products_chunk_${CHUNK_ID}.csv"
+            exit 0
+          fi
+          
       - name: Scrape product chunk
+        if: ${{ steps.chunk_calc.outputs.chunk_size > 0 }}
         run: |
           CHUNK_ID=${{ matrix.chunk_id }}
           CHUNK_FILE="output/chunk_${CHUNK_ID}.json"
           URL_COUNT=$(jq '.urls | length' "$CHUNK_FILE")
           
-          if [ "$URL_COUNT" -eq 0 ]; then
-            echo "No URLs in chunk $CHUNK_ID, skipping"
-            exit 0
-          fi
-          
           echo "=== Scraping Product Chunk $CHUNK_ID ($URL_COUNT URLs) ==="
+          echo "Using concurrency: ${{ github.event.inputs.product_concurrency }}"
           
-          # Run product scraper
+          # Run product scraper with chunk mode
           python colemanfurniture_scraper/scripts/run_ashley_scraper.py \
             --urls-file "$CHUNK_FILE" \
             --product-concurrency ${{ github.event.inputs.product_concurrency }} \
@@ -335,15 +353,8 @@ jobs:
             NEW_NAME="output/ashley_products_chunk_${CHUNK_ID}.csv"
             mv "$CSV_FILE" "$NEW_NAME"
             echo "Renamed to: $NEW_NAME"
-          elif ls output/*.csv 1> /dev/null 2>&1; then
-            CSV_FILE=$(ls output/*.csv | head -n 1)
-            echo "Found CSV: $CSV_FILE"
-            NEW_NAME="output/ashley_products_chunk_${CHUNK_ID}.csv"
-            mv "$CSV_FILE" "$NEW_NAME"
-            echo "Renamed to: $NEW_NAME"
-          else
-            echo "No CSV files found in output directory"
-            # Create empty file with headers
+          elif [ ! -f "output/ashley_products_chunk_${CHUNK_ID}.csv" ]; then
+            echo "No CSV files found, creating empty file"
             echo "Ref Product URL,Ref Product ID,Ref Variant ID,Ref Category,Ref Category URL,Ref Brand Name,Ref Product Name,Ref SKU,Ref MPN,Ref GTIN,Ref Price,Ref Main Image,Ref Quantity,Ref Group Attr 1,Ref Group Attr 2,Ref Images,Ref Dimensions,Ref Status,Ref Highlights,Date Scrapped" > "output/ashley_products_chunk_${CHUNK_ID}.csv"
           fi
           
@@ -393,10 +404,12 @@ jobs:
             for f in $CSV_FILES; do
               echo "Merging: $f"
               # Count rows in this file (excluding header)
-              FILE_ROWS=$(tail -n +2 "$f" | sed '/^$/d' | wc -l)
-              TOTAL_ROWS=$((TOTAL_ROWS + FILE_ROWS))
-              # Append data
-              tail -n +2 "$f" | sed '/^$/d' >> ashley_products_full.csv
+              if [ -s "$f" ] && [ "$(wc -l < "$f")" -gt 1 ]; then
+                FILE_ROWS=$(tail -n +2 "$f" | sed '/^$/d' | wc -l)
+                TOTAL_ROWS=$((TOTAL_ROWS + FILE_ROWS))
+                # Append data
+                tail -n +2 "$f" | sed '/^$/d' >> ashley_products_full.csv
+              fi
             done
             
             echo "Merged $TOTAL_ROWS total product rows"
@@ -448,8 +461,8 @@ jobs:
           set net:max-retries 3
           set net:timeout 30
           open -u "$FTP_USER","$FTP_PASS" "$FTP_HOST"
-          mkdir -p $FTP_BASE_DIR
-          cd $FTP_BASE_DIR
+          mkdir -p $FTP_BASE_DIR/ashley
+          cd $FTP_BASE_DIR/ashley
           
           # Upload with timestamped filename
           put ashley_products_full.csv -o $TIMESTAMPED_FILE
@@ -459,7 +472,7 @@ jobs:
           put ashley_products_full.csv -o ashley_furniture_latest.csv
           echo "Uploaded: ashley_furniture_latest.csv"
           
-          # Keep only last 7 daily files (optional)
+          # Keep only last 7 daily files
           ls | grep "ashley_furniture_.*_[0-9]\{8\}\.csv" | sort | head -n -7 | xargs -r rm
           
           ls -la
@@ -471,12 +484,14 @@ jobs:
           
           echo "✅ Files uploaded successfully"
           
-      - name: Send notification (optional)
+      - name: Send notification
         if: always()
         run: |
           if [ "${{ job.status }}" = "success" ]; then
+            PRODUCT_COUNT=$(tail -n +2 ashley_products_full.csv 2>/dev/null | wc -l || echo "0")
             echo "✅ Ashley scraper completed successfully!"
-            echo "Total products scraped: $(tail -n +2 ashley_products_full.csv | wc -l)"
+            echo "Total products scraped: $PRODUCT_COUNT"
+            echo "Parallel chunks: ${{ github.event.inputs.product_chunks }}"
           else
             echo "❌ Ashley scraper failed with status: ${{ job.status }}"
           fi

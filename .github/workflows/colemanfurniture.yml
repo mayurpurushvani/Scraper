@@ -1,4 +1,5 @@
 name: Coleman and Homegallerystores Parallel Sitemap Scraper
+
 on:
   workflow_dispatch:
     inputs:
@@ -29,27 +30,55 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
+      domain: ${{ steps.domain.outputs.domain }}
     steps:
+      - name: Extract domain
+        id: domain
+        run: |
+          URL="${{ github.event.inputs.website_url }}"
+          DOMAIN=$(echo "$URL" | sed -E 's|https?://||;s|/.*||' | sed 's/[^a-zA-Z0-9]/_/g')
+          echo "domain=$DOMAIN" >> $GITHUB_OUTPUT
+          echo "Domain: $DOMAIN"
+          
       - id: matrix
         run: |
           TOTAL=${{ github.event.inputs.total_sitemaps }}
           PER_JOB=${{ github.event.inputs.sitemaps_per_job }}
           URL="${{ github.event.inputs.website_url }}"
+          DOMAIN="${{ steps.domain.outputs.domain }}"
 
-          # Extract domain from URL for filename
-          DOMAIN=$(echo "$URL" | sed -E 's|https?://||;s|/.*||' | sed 's/[^a-zA-Z0-9]/_/g')
+          # Auto-detect if total is 0
+          if [ "$TOTAL" -eq 0 ]; then
+            echo "Auto-detecting sitemap count..."
+            # Try to fetch sitemap index
+            SITEMAP_URL="${URL}/sitemap.xml"
+            if curl -s -f -o /dev/null "$SITEMAP_URL"; then
+              # Count sitemaps in index
+              TOTAL=$(curl -s "$SITEMAP_URL" | grep -o "<loc>[^<]*</loc>" | wc -l)
+              echo "Found $TOTAL sitemaps"
+            else
+              TOTAL=5  # Fallback
+              echo "Could not detect, using fallback: $TOTAL"
+            fi
+          fi
           
-          [ "$TOTAL" -eq 0 ] && TOTAL=3
           JOBS=$(( (TOTAL + PER_JOB - 1) / PER_JOB ))
+          [ $JOBS -eq 0 ] && JOBS=1
 
           MATRIX="["
           for ((i=0;i<JOBS;i++)); do
             OFFSET=$(( i * PER_JOB ))
-            MATRIX+="{\"offset\":$OFFSET,\"limit\":$PER_JOB,\"url\":\"$URL\",\"domain\":\"$DOMAIN\"},"
+            LIMIT=$PER_JOB
+            # Last job gets remaining
+            if [ $i -eq $((JOBS - 1)) ]; then
+              LIMIT=$(( TOTAL - OFFSET ))
+            fi
+            MATRIX+="{\"offset\":$OFFSET,\"limit\":$LIMIT,\"url\":\"$URL\",\"domain\":\"$DOMAIN\"},"
           done
           MATRIX="${MATRIX%,}]"
 
           echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
+          echo "Total sitemaps: $TOTAL, Jobs: $JOBS"
 
   scrape:
     needs: plan
@@ -71,14 +100,9 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          if [ -f "requirements.txt" ]; then
-            echo "Found requirements.txt in root"
-            pip install -r requirements.txt
-          elif [ -f "colemanfurniture_scraper/requirements.txt" ]; then
-            echo "Found requirements.txt in colemanfurniture_scraper/"
+          if [ -f "colemanfurniture_scraper/requirements.txt" ]; then
             pip install -r colemanfurniture_scraper/requirements.txt
           else
-            echo "No requirements.txt found, installing default packages"
             pip install scrapy pandas lxml requests beautifulsoup4
           fi
           
@@ -101,7 +125,13 @@ jobs:
           echo "Max workers: $MAX_WORKERS"
           echo "Domain: ${{ matrix.domain }}"
           
-          # Run the Script
+          # Check if script exists
+          if [ ! -f "colemanfurniture_scraper/scripts/run.py" ]; then
+            echo "❌ Script not found: colemanfurniture_scraper/scripts/run.py"
+            exit 1
+          fi
+          
+          # Run the scraper
           python colemanfurniture_scraper/scripts/run.py \
             --website-url "$CURR_URL" \
             --sitemap-offset $SITEMAP_OFFSET \
@@ -113,35 +143,34 @@ jobs:
       - name: Rename output file
         run: |
           echo "Renaming output file..."
-          # Check if any CSV files exist in output directory
+          mkdir -p output
+          
+          # Check if any CSV files exist
           if ls output/*.csv 1> /dev/null 2>&1; then
-            # Get the first CSV file
             CSV_FILE=$(ls output/*.csv | head -n 1)
             echo "Found CSV: $CSV_FILE"
-            # Rename it with domain and offset
-            NEW_NAME="output/${{ matrix.domain }}_chunk_${{ matrix.offset }}.csv"
+            NEW_NAME="output/${{ matrix.domain }}_offset_${{ matrix.offset }}.csv"
             mv "$CSV_FILE" "$NEW_NAME"
             echo "Renamed to: $NEW_NAME"
           else
             echo "No CSV files found in output directory"
-            # Create empty file with headers to avoid errors
-            echo "Ref Product URL,Ref Product ID,Ref Varient ID,Ref Category,Ref Category URL,Ref Brand Name,Ref Product Name,Ref SKU,Ref MPN,Ref GTIN,Ref Price,Ref Main Image,Ref Quantity,Ref Group Attr 1,Ref Group Attr 2,Ref Status,Date Scrapped" > "output/${{ matrix.domain }}_chunk_${{ matrix.offset }}.csv"
+            # Create empty file with headers
+            echo "Ref Product URL,Ref Product ID,Ref Variant ID,Ref Category,Ref Category URL,Ref Brand Name,Ref Product Name,Ref SKU,Ref MPN,Ref GTIN,Ref Price,Ref Main Image,Ref Quantity,Ref Group Attr 1,Ref Group Attr 2,Ref Status,Date Scrapped" > "output/${{ matrix.domain }}_offset_${{ matrix.offset }}.csv"
           fi
           
-      - name: List output files
-        run: ls -la output/ || echo "No output directory"
-        
       - name: Upload chunk artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.domain }}_chunk_${{ matrix.offset }}
-          path: output/${{ matrix.domain }}_chunk_${{ matrix.offset }}.csv
+          name: ${{ matrix.domain }}_offset_${{ matrix.offset }}
+          path: output/${{ matrix.domain }}_offset_${{ matrix.offset }}.csv
           retention-days: 1
 
   merge:
     needs: scrape
     runs-on: ubuntu-latest
-    
+    outputs:
+      filename: ${{ steps.meta.outputs.name }}
+      
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -158,7 +187,7 @@ jobs:
           if [ -z "$CSV_FILES" ]; then
             echo "No CSV files found to merge"
             # Create empty CSV with headers
-            echo "Ref Product URL,Ref Product ID,Ref Varient ID,Ref Category,Ref Category URL,Ref Brand Name,Ref Product Name,Ref SKU,Ref MPN,Ref GTIN,Ref Price,Ref Main Image,Ref Quantity,Ref Group Attr 1,Ref Group Attr 2,Ref Status,Date Scrapped" > products_full.csv
+            echo "Ref Product URL,Ref Product ID,Ref Variant ID,Ref Category,Ref Category URL,Ref Brand Name,Ref Product Name,Ref SKU,Ref MPN,Ref GTIN,Ref Price,Ref Main Image,Ref Quantity,Ref Group Attr 1,Ref Group Attr 2,Ref Status,Date Scrapped" > products_full.csv
             echo "Created empty CSV"
           else
             echo "Found $(echo "$CSV_FILES" | wc -l) CSV files"
@@ -171,31 +200,23 @@ jobs:
             head -n 1 "$FIRST_FILE" > products_full.csv
             
             # Merge all files (skip headers)
+            TOTAL_ROWS=0
             for f in $CSV_FILES; do
               echo "Merging: $f"
-              # Skip first line (header) and empty lines
-              tail -n +2 "$f" | sed '/^$/d' >> products_full.csv
+              if [ -s "$f" ] && [ "$(wc -l < "$f")" -gt 1 ]; then
+                FILE_ROWS=$(tail -n +2 "$f" | sed '/^$/d' | wc -l)
+                TOTAL_ROWS=$((TOTAL_ROWS + FILE_ROWS))
+                tail -n +2 "$f" | sed '/^$/d' >> products_full.csv
+              fi
             done
             
-            # Count rows
-            TOTAL_ROWS=$(tail -n +2 products_full.csv | wc -l)
             echo "Merged $TOTAL_ROWS rows"
           fi
           
       - name: Build output filename
         id: meta
         run: |
-          # Extract domain from first CSV filename
-          FIRST_CSV=$(find chunks -name "*.csv" -type f | head -n 1)
-          if [ -n "$FIRST_CSV" ]; then
-            # Extract domain from filename pattern: domain_chunk_0.csv
-            DOMAIN=$(basename "$FIRST_CSV" | cut -d'_' -f1)
-          else
-            # Fallback to input URL
-            URL="${{ github.event.inputs.website_url }}"
-            DOMAIN=$(echo "$URL" | sed -E 's|https?://||;s|/.*||' | sed 's/[^a-zA-Z0-9]/_/g')
-          fi
-          
+          DOMAIN="${{ needs.plan.outputs.domain }}"
           DATE=$(date +%F)
           FILENAME="${DOMAIN}_${DATE}.csv"
           echo "name=$FILENAME" >> $GITHUB_OUTPUT
@@ -228,8 +249,8 @@ jobs:
           lftp -u "$FTP_USER","$FTP_PASS" "$FTP_HOST" <<EOF
           set ftp:ssl-allow no
           set ssl:verify-certificate no
-          mkdir -p $FTP_BASE_DIR
-          cd $FTP_BASE_DIR
+          mkdir -p $FTP_BASE_DIR/coleman
+          cd $FTP_BASE_DIR/coleman
           put products_full.csv -o $FILE
           ls -la $FILE
           bye

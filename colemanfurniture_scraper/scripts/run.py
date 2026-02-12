@@ -51,7 +51,7 @@ def main():
     max_workers = int(os.getenv('MAX_WORKERS', '16'))
     settings.set('CONCURRENT_REQUESTS', max_workers)
     
-    download_delay = float(os.getenv('DOWNLOAD_DELAY', '0.5'))
+    download_delay = float(os.getenv('DOWNLOAD_DELAY', '0.1'))
     settings.set('DOWNLOAD_DELAY', download_delay)
     settings.set('FEED_EXPORT_FIELDS', [
         'Ref Product URL',
