@@ -375,13 +375,14 @@ class ProductFetcher(Spider):
         return product_data
 
     def parse_product_page_with_check(self, response):
-        """Parse product page with caching and error handling"""
-        # Check cache for product detection
+        """Parse product page - ALWAYS extract all data, regardless of JSON-LD"""
+        
+        # Check cache for product detection (only for bundle logic, NOT for data extraction)
         cache_key = response.url
         if cache_key in self.json_ld_cache:
             has_product_json = self.json_ld_cache[cache_key]
         else:
-            # Quick check for product JSON-LD
+            # Quick check for product JSON-LD (only used for bundle products)
             has_product_json = False
             json_scripts = response.xpath(self.json_ld_xpath).getall()
             for script in json_scripts[:3]:
@@ -412,7 +413,7 @@ class ProductFetcher(Spider):
                     continue
             self.json_ld_cache[cache_key] = has_product_json
         
-        # Extract JSON-LD data
+        # Extract JSON-LD data (may be empty if no JSON-LD)
         json_data = self._extract_json_ld_data(response)
         
         # Build item with exact column structure
@@ -422,7 +423,7 @@ class ProductFetcher(Spider):
             'Ref Variant ID': '',
             'Ref Category': json_data['category'],
             'Ref Category URL': json_data['category_url'],
-            'Ref Brand Name': json_data['brand'],
+            'Ref Brand Name': json_data['brand'] if json_data['brand'] else 'Ashley Furniture',  # Default if missing
             'Ref Product Name': '',
             'Ref SKU': json_data['sku'],
             'Ref MPN': json_data['mpn'],
@@ -434,46 +435,61 @@ class ProductFetcher(Spider):
             'Ref Group Attr 2': '',
             'Ref Images': '',
             'Ref Dimensions': '',
-            'Ref Status': json_data['status'],
+            'Ref Status': json_data['status'] if json_data['status'] else 'Active',  # Default if missing
             'Ref Highlights': '',
             'Date Scrapped': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         }
         
-        # Add non-JSON fields
-        product_id = response.xpath('//div[@data-id]/@data-id').get()
-        if product_id:
-            item['Ref Product ID'] = product_id.strip()
-        
-        product_name = response.xpath('//*[@id="contentId"]/div/div[1]/div[2]/div[2]/h1/text()').get()
-        if product_name:
-            item['Ref Product Name'] = product_name.strip()
-        
-        # Extract additional fields with error handling
+        # ALWAYS extract non-JSON fields - these work regardless of JSON-LD
         try:
-            item['Ref Images'] = self.extract_main_images(response)
+            product_id = response.xpath('//div[@data-id]/@data-id').get()
+            if product_id:
+                item['Ref Product ID'] = product_id.strip()
+        except Exception:
+            pass
+        
+        try:
+            product_name = response.xpath('//*[@id="contentId"]/div/div[1]/div[2]/div[2]/h1/text()').get()
+            if product_name:
+                item['Ref Product Name'] = product_name.strip()
+        except Exception:
+            pass
+        
+        # ALWAYS extract images - this comes from App script, not JSON-LD
+        try:
+            images = self.extract_main_images(response)
+            if images:
+                item['Ref Images'] = images
+                # If no main image from JSON-LD, use first image
+                if not item['Ref Main Image'] and images:
+                    item['Ref Main Image'] = images.split('\n')[0]
         except Exception as e:
             self.logger.error(f"Image extraction failed: {e}")
-            item['Ref Images'] = ''
         
+        # ALWAYS extract highlights
         try:
-            item['Ref Highlights'] = self.extract_highlights(response)
+            highlights = self.extract_highlights(response)
+            if highlights:
+                item['Ref Highlights'] = highlights
         except Exception as e:
             self.logger.error(f"Highlight extraction failed: {e}")
-            item['Ref Highlights'] = ''
         
+        # ALWAYS extract dimensions
         try:
-            item['Ref Dimensions'] = self.extract_dimensions(response)
+            dimensions = self.extract_dimensions(response)
+            if dimensions:
+                item['Ref Dimensions'] = dimensions
         except Exception as e:
             self.logger.error(f"Dimension extraction failed: {e}")
-            item['Ref Dimensions'] = ''
         
-        # Add chunk metadata to output (optional)
+        # Add chunk metadata
         if self.chunk_mode:
             item['Chunk ID'] = str(self.chunk_id)
             item['Total Chunks'] = str(self.total_chunks)
         
         yield item
         
+        # ONLY use has_product_json for bundle product extraction
         if has_product_json:
             for bundle_item in self.extract_bundle_products(response):
                 yield bundle_item
@@ -498,8 +514,7 @@ class ProductFetcher(Spider):
             data = json.loads(script)
             simple_items = data.get('data', {}).get('content', {}).get('productLayouts', {}).get('simpleItems', [])
             
-            # Limit to 5 bundle products max
-            for item in simple_items[:5]:
+            for item in simple_items:
                 if isinstance(item, dict):
                     sub_product_url = item.get('url')
                     if not sub_product_url or not isinstance(sub_product_url, str):
@@ -715,8 +730,7 @@ class ProductFetcher(Spider):
     def extract_highlights(self, response):
         highlights = []
         highlight_items = response.xpath('//div[contains(@class, "product-hightlights-items-item")]')
-        # Limit to 5 highlights
-        for item in highlight_items[:5]:
+        for item in highlight_items:
             title = item.xpath('.//span[contains(@class, "product-hightlights-items-item-title")]/text()').get()
             desc = item.xpath('.//p[contains(@class, "product-hightlights-items-item-desc")]/text()').get()
             if title:
@@ -742,8 +756,7 @@ class ProductFetcher(Spider):
                 content = main_data.get('content', {})
                 gallery = content.get('gallery', [])
                 if isinstance(gallery, list):
-                    # Limit to 10 images
-                    for img in gallery[:10]:
+                    for img in gallery:
                         if isinstance(img, dict):
                             original_url = img.get('original')
                             if original_url:
@@ -775,8 +788,7 @@ class ProductFetcher(Spider):
             setIncludes = content.get('setIncludes', {})
             items = setIncludes.get('items', [])
             
-            # Limit to first 3 items
-            for item in items[:3]:
+            for item in items:
                 if not isinstance(item, dict):
                     continue
                 
@@ -787,9 +799,8 @@ class ProductFetcher(Spider):
                 dimension = item.get('dimension', {})
                 dimensions_list = dimension.get('list', [])
                 
-                # Limit to first 3 dimensions
                 dimension_data = []
-                for dim in dimensions_list[:3]:
+                for dim in dimensions_list:
                     if dim and isinstance(dim, str):
                         dimension_data.append(dim)
                 
@@ -895,8 +906,8 @@ class ProductFetcher(Spider):
             status = failure.value.response.status
             self.logger.error(f"Chunk {chunk_id}: Product page failed for {url} - Status: {status}, Retry: {retry_count}")
             
-            # Retry up to 3 times for specific errors
-            if status in [405, 429, 500, 502, 503, 504] and retry_count < 3:
+            # Retry up to 1 times for specific errors
+            if status in [405, 429, 500, 502, 503, 504] and retry_count < 1:
                 self.logger.info(f"Chunk {chunk_id}: Retrying {url} (attempt {retry_count + 1}/3)")
                 
                 headers = self.get_headers(referer='https://colemanfurniture.com/ashley-furniture.html')
