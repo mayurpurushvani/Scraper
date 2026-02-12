@@ -1,10 +1,11 @@
+# scripts/run_ashley_scraper.py
 import os
 import sys
 import json
 import argparse
 import logging
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 from datetime import datetime
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -72,12 +73,25 @@ class AshleyURLSpider(scrapy.Spider):
             page_urls = []
             for product in products:
                 url = product.get('url')
-                if url:
-                    if not url.startswith('http'):
-                        full_url = urljoin('https://colemanfurniture.com', url)
+                if url and isinstance(url, str) and url.strip():
+                    # Clean the URL - remove any quotes
+                    url = url.strip().strip('"').strip("'")
+                    
+                    # Fix relative URLs
+                    if not url.startswith(('http://', 'https://')):
+                        if url.startswith('/'):
+                            full_url = urljoin('https://colemanfurniture.com', url)
+                        else:
+                            full_url = urljoin('https://colemanfurniture.com/', url)
                     else:
                         full_url = url
-                    page_urls.append(full_url)
+                    
+                    # Validate the URL
+                    parsed = urlparse(full_url)
+                    if parsed.scheme and parsed.netloc:
+                        page_urls.append(full_url)
+                    else:
+                        logger.warning(f"Invalid URL on page {page}: {url}")
             
             if page_urls:
                 for url in page_urls:
@@ -85,7 +99,7 @@ class AshleyURLSpider(scrapy.Spider):
                     if self.url_list is not None:
                         self.url_list.append(url)
                 
-                logger.info(f"Page {page}: Found {len(page_urls)} products (Total: {len(self.ashley_urls)})")
+                logger.info(f"Page {page}: Found {len(page_urls)} valid products (Total: {len(self.ashley_urls)})")
                 
         except Exception as e:
             logger.error(f"Error on page {page}: {e}")
@@ -100,11 +114,46 @@ class AshleyProductFetcher(ProductFetcher):
         self.ashley_urls = kwargs.pop('ashley_urls', [])
         super().__init__(*args, **kwargs)
     
+    def clean_url(self, url):
+        """Clean and validate URL"""
+        if not url or not isinstance(url, str):
+            return None
+        
+        # Remove whitespace and quotes
+        url = url.strip().strip('"').strip("'")
+        
+        # Skip empty URLs
+        if not url:
+            return None
+        
+        # Ensure URL has scheme
+        if not url.startswith(('http://', 'https://')):
+            if url.startswith('/'):
+                url = f"https://colemanfurniture.com{url}"
+            else:
+                url = f"https://colemanfurniture.com/{url}"
+        
+        # Validate URL format
+        parsed = urlparse(url)
+        if parsed.scheme and parsed.netloc:
+            return url
+        else:
+            return None
+    
     def start_requests(self):
         """Override to use Ashley URLs instead of sitemaps"""
-        self.logger.info(f"Starting to process {len(self.ashley_urls)} Ashley product URLs")
-        
+        # Filter and validate URLs before sending requests
+        valid_urls = []
         for url in self.ashley_urls:
+            cleaned_url = self.clean_url(url)
+            if cleaned_url:
+                valid_urls.append(cleaned_url)
+            else:
+                logger.warning(f"Skipping invalid URL format: {url}")
+        
+        self.logger.info(f"Starting to process {len(valid_urls)} valid Ashley product URLs (filtered from {len(self.ashley_urls)} total)")
+        
+        for url in valid_urls:
             yield scrapy.Request(
                 url,
                 callback=self.parse_product_page_with_check,
@@ -113,6 +162,97 @@ class AshleyProductFetcher(ProductFetcher):
                 priority=5,
                 dont_filter=True
             )
+    
+    def handle_product_error(self, failure):
+        """Handle request failures"""
+        url = failure.request.meta.get('url', 'Unknown')
+        self.logger.error(f"Product page request failed for {url}: {failure.value}")
+
+def clean_url_string(url):
+    """Clean individual URL string"""
+    if not url or not isinstance(url, str):
+        return None
+    
+    # Remove whitespace and quotes
+    url = url.strip().strip('"').strip("'")
+    
+    # Skip empty URLs
+    if not url:
+        return None
+    
+    # Ensure URL has scheme
+    if not url.startswith(('http://', 'https://')):
+        if url.startswith('/'):
+            url = f"https://colemanfurniture.com{url}"
+        else:
+            url = f"https://colemanfurniture.com/{url}"
+    
+    return url
+
+def validate_urls_file(file_path):
+    """Validate and clean URLs in the input file"""
+    try:
+        with open(file_path, 'r') as f:
+            content = f.read()
+        
+        # Try to parse JSON
+        try:
+            data = json.loads(content)
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid JSON in file {file_path}: {e}")
+            return []
+        
+        # Extract URLs based on structure
+        if isinstance(data, dict) and 'urls' in data:
+            urls = data['urls']
+            is_dict_format = True
+        elif isinstance(data, list):
+            urls = data
+            is_dict_format = False
+            data = {"urls": data, "total_urls": 0, "manufacturer_id": "250"}
+        else:
+            logger.error(f"Unexpected JSON structure in {file_path}")
+            return []
+        
+        # Clean and validate URLs
+        valid_urls = []
+        for url in urls:
+            cleaned_url = clean_url_string(url)
+            if cleaned_url:
+                # Additional validation - check if it's a proper URL
+                parsed = urlparse(cleaned_url)
+                if parsed.scheme and parsed.netloc and '.' in parsed.netloc:
+                    valid_urls.append(cleaned_url)
+                else:
+                    logger.warning(f"Invalid URL after cleaning: '{url}' -> '{cleaned_url}'")
+            else:
+                logger.warning(f"Failed to clean URL: '{url}'")
+        
+        # Update the data with cleaned URLs
+        if is_dict_format:
+            data['urls'] = valid_urls
+            data['total_urls'] = len(valid_urls)
+        else:
+            data['urls'] = valid_urls
+            data['total_urls'] = len(valid_urls)
+        
+        # Write back cleaned URLs
+        with open(file_path, 'w') as f:
+            json.dump(data, f, indent=2)
+        
+        logger.info(f"✅ Validated URLs file: {len(valid_urls)} valid URLs (removed {len(urls) - len(valid_urls)} invalid)")
+        
+        # Show sample of cleaned URLs
+        if valid_urls:
+            logger.info(f"Sample cleaned URL: {valid_urls[0]}")
+        
+        return valid_urls
+        
+    except Exception as e:
+        logger.error(f"Error validating URLs file: {e}")
+        import traceback
+        traceback.print_exc()
+        return []
 
 def main():
     parser = argparse.ArgumentParser(description='Ashley Furniture Scraper')
@@ -171,6 +311,15 @@ def main():
                      concurrent_pages=args.url_concurrency)
         process.start()
         
+        # Clean and validate collected URLs
+        valid_urls = []
+        for url in url_list:
+            cleaned_url = clean_url_string(url)
+            if cleaned_url:
+                parsed = urlparse(cleaned_url)
+                if parsed.scheme and parsed.netloc and '.' in parsed.netloc:
+                    valid_urls.append(cleaned_url)
+        
         # Save URLs to file
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         output_file = f'{args.output_dir}/ashley_urls_chunk_{args.chunk}_{args.job_id}_{timestamp}.json'
@@ -181,11 +330,16 @@ def main():
                 "chunk": args.chunk,
                 "start_page": args.start_page,
                 "end_page": args.end_page,
-                "total_urls": len(url_list),
-                "urls": url_list
+                "total_urls": len(valid_urls),
+                "urls": valid_urls
             }, f, indent=2)
         
-        logger.info(f"✅ Saved {len(url_list)} URLs to {output_file}")
+        logger.info(f"✅ Saved {len(valid_urls)} valid URLs to {output_file} (removed {len(url_list) - len(valid_urls)} invalid)")
+        
+        # Show sample of saved URLs
+        if valid_urls:
+            logger.info(f"Sample URL: {valid_urls[0]}")
+        
         print(f"OUTPUT_FILE={output_file}")
     
     # MODE 2: Scrape products from URLs file
@@ -195,23 +349,29 @@ def main():
         logger.info(f"URLs file: {args.urls_file}")
         logger.info("="*60)
         
-        # Load URLs
-        with open(args.urls_file, 'r') as f:
-            data = json.load(f)
-            if 'urls' in data:
-                ashley_urls = data['urls']
-            elif isinstance(data, list):
-                ashley_urls = data
-            else:
-                ashley_urls = []
-        
-        logger.info(f"Loaded {len(ashley_urls)} Ashley product URLs")
-        
-        if not ashley_urls:
-            logger.error("No URLs found to scrape!")
+        # First, check if file exists
+        if not os.path.exists(args.urls_file):
+            logger.error(f"URLs file not found: {args.urls_file}")
             sys.exit(1)
         
-        # Generate output filename (matching your run.py pattern)
+        # Show raw file content for debugging
+        try:
+            with open(args.urls_file, 'r') as f:
+                raw_content = f.read()
+            logger.debug(f"Raw file content (first 200 chars): {raw_content[:200]}")
+        except Exception as e:
+            logger.error(f"Could not read file: {e}")
+        
+        # Validate and clean URLs file
+        ashley_urls = validate_urls_file(args.urls_file)
+        
+        if not ashley_urls:
+            logger.error("No valid URLs found to scrape!")
+            sys.exit(1)
+        
+        logger.info(f"First 5 valid URLs: {ashley_urls[:5]}")
+        
+        # Generate output filename
         timestamp = os.getenv('GITHUB_RUN_ID', 'local')
         domain = f"ashley_{args.manufacturer_id}"
         output_file = f'{args.output_dir}/output_{domain}_{args.job_id}_{timestamp}.csv'
@@ -219,7 +379,7 @@ def main():
         # Get project settings
         settings = get_project_settings()
         
-        # Configure settings (matching your run.py)
+        # Configure settings
         settings.set('FEED_URI', output_file)
         settings.set('FEED_FORMAT', 'csv')
         settings.set('CONCURRENT_REQUESTS', args.product_concurrency)
@@ -248,7 +408,7 @@ def main():
         ])
         settings.set('DUPEFILTER_CLASS', 'scrapy.dupefilters.RFPDupeFilter')
         
-        # Run the custom ProductFetcher
+        # Run the custom ProductFetcher with validated URLs
         process = CrawlerProcess(settings)
         process.crawl(AshleyProductFetcher,
                      website_url="https://colemanfurniture.com",
