@@ -766,7 +766,6 @@ class ProductFetcher(Spider):
         return '\n'.join(image_urls) if image_urls else ''
 
     def extract_dimensions(self, response):
-        """Extract dimensions with limits to prevent infinite loops"""
         json_script = response.xpath('//script[@data-hypernova-key="App"]/text()').get()
         if not json_script:
             return ''
@@ -781,22 +780,20 @@ class ProductFetcher(Spider):
         try:
             data = json.loads(json_script)
             content = data.get('data', {}).get('content', {})
+            setIncludes = content.get('setIncludes', {})
             
             result = {}
             
-            # ONLY process setIncludes - remove all nested loops
-            setIncludes = content.get('setIncludes', {})
             items = setIncludes.get('items', [])
-            
             for item in items:
                 if not isinstance(item, dict):
                     continue
                 
                 item_short_name = item.get('itemShortName', '')
-                if not item_short_name:
-                    continue
-                    
                 dimension = item.get('dimension', {})
+                image_url = dimension.get('image', {}).get('url', '') if isinstance(dimension.get('image'), dict) else ''
+                if image_url and not self.is_valid_image_url(image_url):
+                    image_url = ''
                 dimensions_list = dimension.get('list', [])
                 
                 dimension_data = []
@@ -804,33 +801,92 @@ class ProductFetcher(Spider):
                     if dim and isinstance(dim, str):
                         dimension_data.append(dim)
                 
-                if dimension_data:
-                    result[item_short_name.lower()] = dimension_data
+                if item_short_name:
+                    result[item_short_name.lower()] = {
+                        "url": image_url,
+                        "data": dimension_data if dimension_data else []
+                    }
             
-            # If no dimensions, try simpleItems
-            if not result:
-                simpleItems = content.get('productLayouts', {}).get('simpleItems', [])
-                if isinstance(simpleItems, list):
-                    for item in simpleItems[:3]:
-                        if not isinstance(item, dict):
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                
+                configurables = item.get('configurables', [])
+                for config in configurables:
+                    if not isinstance(config, dict):
+                        continue
+                    
+                    options = config.get('options', [])
+                    for option in options:
+                        if not isinstance(option, dict):
                             continue
                         
-                        item_short_name = item.get('itemShortName', '')
-                        if not item_short_name:
-                            continue
-                            
-                        dimension = item.get('dimension', {})
+                        item_short_name = option.get('itemShortName', '')
+                        dimension = option.get('dimension', {})
+                        image_url = dimension.get('image', {}).get('url', '') if isinstance(dimension.get('image'), dict) else ''
+                        if image_url and not self.is_valid_image_url(image_url):
+                            image_url = ''
                         dimensions_list = dimension.get('list', [])
                         
                         dimension_data = []
-                        for dim in dimensions_list[:3]:
+                        for dim in dimensions_list:
                             if dim and isinstance(dim, str):
                                 dimension_data.append(dim)
                         
-                        if dimension_data:
-                            result[item_short_name.lower()] = dimension_data
+                        if item_short_name:
+                            result[item_short_name.lower()] = {
+                                "url": image_url,
+                                "data": dimension_data if dimension_data else []
+                            }
             
-            # If still no dimensions, try accordion
+            additional_items_data = content.get('additionalItems', {})
+            if isinstance(additional_items_data, dict):
+                additional_items = additional_items_data.get('items', [])
+                for item in additional_items:
+                    if not isinstance(item, dict):
+                        continue
+                    
+                    item_short_name = item.get('itemShortName', '')
+                    dimension = item.get('dimension', {})
+                    image_url = dimension.get('image', {}).get('url', '') if isinstance(dimension.get('image'), dict) else ''
+                    if image_url and not self.is_valid_image_url(image_url):
+                        image_url = ''
+                    dimensions_list = dimension.get('list', [])
+                    
+                    dimension_data = []
+                    for dim in dimensions_list:
+                        if dim and isinstance(dim, str):
+                            dimension_data.append(dim)
+                    
+                    if item_short_name:
+                        result[item_short_name.lower()] = {
+                            "url": image_url,
+                            "data": dimension_data if dimension_data else []
+                        }
+
+            simpleItems = content.get('productLayouts', {}).get('simpleItems', {})
+            if isinstance(simpleItems, list):
+                for item in simpleItems:
+                    if not isinstance(item, dict):
+                        continue
+                    item_short_name = item.get('itemShortName', '')
+                    dimension = item.get('dimension', {})
+                    image_url = dimension.get('image', {}).get('url', '') if isinstance(dimension.get('image'), dict) else ''
+                    if image_url and not self.is_valid_image_url(image_url):
+                        image_url = ''
+                    dimensions_list = dimension.get('list', [])
+                    
+                    dimension_data = []
+                    for dim in dimensions_list:
+                        if dim and isinstance(dim, str):
+                            dimension_data.append(dim)
+                    
+                    if item_short_name:
+                        result[item_short_name.lower()] = {
+                            "url": image_url,
+                            "data": dimension_data if dimension_data else []
+                        }
+
             if not result:
                 accordion_data = content.get('accordion', {})
                 dimensions_data = accordion_data.get('dimensions', {})
@@ -838,15 +894,20 @@ class ProductFetcher(Spider):
                 if dimensions_data and isinstance(dimensions_data, dict):
                     dimension_list = dimensions_data.get('dimensionList', [])
                     
+                    image_url = dimensions_data.get('image', {}).get('url', '') if isinstance(dimensions_data.get('image'), dict) else ''
+                    if image_url and not self.is_valid_image_url(image_url):
+                        image_url = ''
+                    
                     dimension_data = []
-                    for dim in dimension_list[:3]:
+                    for dim in dimension_list:
                         if dim and isinstance(dim, str):
                             dimension_data.append(dim)
                     
                     if dimension_data:
-                        result["dimensions"] = dimension_data
-            
-            # Return simple JSON
+                        result["dimensions"] = {
+                            "url": image_url,
+                            "data": dimension_data
+                        }
             if result:
                 return json.dumps(result, indent=2)
             return ''
