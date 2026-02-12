@@ -99,7 +99,7 @@ jobs:
   # JOB 2: Run URL collection in parallel
   collect_chunks:
     needs: collect_urls
-    if: ${{ !github.event.inputs.scrape_only }}
+    if: ${{ needs.collect_urls.result == 'success' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -164,7 +164,7 @@ jobs:
   # JOB 3: Merge URL chunks
   merge_urls:
     needs: collect_chunks
-    if: ${{ !github.event.inputs.scrape_only }}
+    if: ${{ needs.collect_urls.result == 'success' && needs.collect_chunks.result == 'success' }}
     runs-on: ubuntu-latest
     outputs:
       urls_file: ${{ steps.save_merged.outputs.urls_file }}
@@ -228,7 +228,7 @@ jobs:
   # JOB 4: Scrape products in parallel chunks
   scrape_products:
     needs: [merge_urls, collect_urls]
-    if: ${{ always() && (github.event.inputs.scrape_only || needs.merge_urls.result == 'success') }}
+    if: ${{ always() && (github.event.inputs.scrape_only == 'true' || needs.merge_urls.result == 'success') }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
