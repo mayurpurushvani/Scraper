@@ -107,9 +107,10 @@ class ProductFetcher(Spider):
                 callback=self.parse_product_page_with_check,
                 meta={'url': url},
                 errback=self.handle_product_error,
-                priority=100
+                priority=100  # Higher priority for PDPs
             ))
 
+        # Yield all requests at once
         for req in requests:
             yield req
 
@@ -123,11 +124,14 @@ class ProductFetcher(Spider):
         if not path:
             return True
 
+        # Quick extension check
         if not path.endswith('.htm'):
             return True
 
+        # Fast string operations - no regex unless necessary
         path_lower = path.lower()
 
+        # Common PLP keywords for Coleman Furniture
         if any(x in path_lower for x in (
                 'furniture', 'sets', 'clearance', 'sale', 'new', 'shop',
                 'bedroom', 'living-room', 'dining-room', 'office',
@@ -136,30 +140,73 @@ class ProductFetcher(Spider):
         )):
             return True
 
+        # Quick length check - PDPs are usually longer
         if len(path_lower.split('-')) <= 4:
             return True
 
+        # Check for product codes - but do this last as it's slower
         if re.search(r'\d{4,}|[a-z]+\d{3,}', path_lower):
             return False
 
-        return False
+        return False  # Default to PDP if uncertain
 
     def parse_product_page_with_check(self, response):
-        """Process product pages - ALWAYS process, don't skip"""
-        self.logger.info(f"Processing product page: {response.url}")
-        
+        """Process product pages with optimized JSON parsing"""
+        json_scripts = response.xpath('//script[@type="application/ld+json"]/text()').getall()
+        has_product_json = False
+
+        for script in json_scripts:
+            try:
+                data = json.loads(script.strip())
+                if isinstance(data, dict):
+                    data_type = data.get('@type')
+                    if data_type:
+                        if isinstance(data_type, str):
+                            if 'Product' in data_type:
+                                has_product_json = True
+                                break
+                        elif isinstance(data_type, list):
+                            if any('Product' in str(t) for t in data_type):
+                                has_product_json = True
+                                break
+                    elif data.get('name') and (data.get('offers') or data.get('sku')):
+                        has_product_json = True
+                        break
+                elif isinstance(data, list):
+                    for item in data:
+                        if isinstance(item, dict):
+                            item_type = item.get('@type')
+                            if item_type:
+                                if isinstance(item_type, str) and 'Product' in item_type:
+                                    has_product_json = True
+                                    break
+                                elif isinstance(item_type, list) and any('Product' in str(t) for t in item_type):
+                                    has_product_json = True
+                                    break
+                    if has_product_json:
+                        break
+            except Exception:
+                continue
+
+        if has_product_json:
+            self.logger.debug(f"Found Product JSON-LD for {response.url}")
+        else:
+            self.logger.debug(f"No Product JSON-LD found for {response.url}")
+
         # Always process the page
         yield from self.parse_product_page(response)
         yield from self.extract_bundle_products(response)
 
     def extract_bundle_products(self, response):
-        """Optimized bundle extraction"""
-        if len(response.body) > 500000:
+        """Optimized bundle extraction - skip if no App script or large response"""
+        # Quick check - skip if response is too large (not a bundle page)
+        if len(response.body) > 500000:  # 500KB
             json_script = response.xpath('//script[@data-hypernova-key="App"]/text()').get()
             if not json_script or 'simpleItems' not in json_script:
                 return
 
             try:
+                # Faster JSON parsing with minimal operations
                 if json_script.startswith('<!--'):
                     json_script = json_script[json_script.find('{'):json_script.rfind('}') + 1]
 
@@ -169,10 +216,12 @@ class ProductFetcher(Spider):
                 if not simple_items:
                     return
 
+                # Process in batch
                 for item in simple_items:
                     if isinstance(item, dict):
                         sub_url = item.get('url')
                         if sub_url and sub_url != response.url:
+                            # Skip if URL is clearly PLP
                             if self._is_plp_url(sub_url):
                                 continue
 
@@ -182,17 +231,19 @@ class ProductFetcher(Spider):
                                 callback=self.parse_product_page_with_check,
                                 meta={'url': sub_url},
                                 errback=self.handle_product_error,
-                                priority=10
+                                priority=10  # Lower priority than main products
                             )
             except Exception as e:
                 self.logger.debug(f"Error extracting bundle products: {e}")
 
     def parse_product_page(self, response):
-        """Parse product page with robust error handling - NEVER SKIP"""
+        """Parse product page with single-pass JSON-LD parsing"""
         item = {}
 
-        # Parse JSON-LD
+        # Pre-parse JSON-LD once
         json_ld_data = []
+        json_app_data = None
+
         for script in response.xpath('//script[@type="application/ld+json"]/text()').getall():
             try:
                 data = json.loads(script.strip())
@@ -200,8 +251,7 @@ class ProductFetcher(Spider):
             except:
                 continue
 
-        # Parse App script
-        json_app_data = None
+        # Pre-parse App script once
         app_script = response.xpath('//script[@data-hypernova-key="App"]/text()').get()
         if app_script:
             try:
@@ -214,10 +264,15 @@ class ProductFetcher(Spider):
             except:
                 pass
 
-        # Find product and breadcrumb data
+        # Extract all fields using pre-parsed data
+        item['Ref Product URL'] = response.url
+        item['Date Scrapped'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+        # Single pass extraction
         product_data = None
         breadcrumb_data = None
 
+        # Find product and breadcrumb data once
         for data in json_ld_data:
             if isinstance(data, dict):
                 data_type = data.get('@type')
@@ -234,302 +289,303 @@ class ProductFetcher(Spider):
                         elif item_type == 'BreadcrumbList':
                             breadcrumb_data = item_data
 
-        # FIXED: Always set all fields with fallbacks
-        item['Ref Product URL'] = response.url
-        item['Date Scrapped'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        
-        # Extract each field with proper fallbacks
-        item['Ref SKU'] = self.extract_sku(response) or ''
-        item['Ref Product Name'] = self.extract_product_name(response) or ''
-        item['Ref Price'] = self.extract_price(response) or ''
-        item['Ref MPN'] = self.extract_mpn(response) or ''
-        item['Ref GTIN'] = ''
-        item['Ref Brand Name'] = self.extract_brand(response) or ''
-        item['Ref Main Image'] = self.extract_main_image(response) or ''
-        item['Ref Category'] = self.extract_category(response) or ''
-        item['Ref Category URL'] = self.extract_category_url(response) or ''
-        item['Ref Status'] = self.extract_status(response) or ''
-        item['Ref Product ID'] = self.extract_product_id(response) or ''
+        # Extract fields using cached data
+        item['Ref SKU'] = self._extract_sku_optimized(product_data, response)
+        item['Ref Product Name'] = self._extract_product_name_optimized(product_data, response)
+        item['Ref Price'] = self._extract_price_optimized(product_data, response)
+        item['Ref MPN'] = self._extract_mpn_optimized(product_data, response)
+        item['Ref GTIN'] = self._extract_gtin_optimized(product_data, response)
+        item['Ref Brand Name'] = self._extract_brand_optimized(product_data, response)
+        item['Ref Main Image'] = self._extract_main_image_optimized(product_data, response)
+        item['Ref Category'] = self._extract_category_optimized(breadcrumb_data, response)
+        item['Ref Category URL'] = self._extract_category_url_optimized(breadcrumb_data, response)
+        item['Ref Status'] = self._extract_status_optimized(product_data, response)
+        item['Ref Product ID'] = self._extract_product_id_optimized(response)
         item['Ref Variant ID'] = ''
-        item['Ref Group Attr 1'] = self.extract_group_attr1(response, 1) or ''
+        item['Ref Group Attr 1'] = self._extract_group_attr1_optimized(product_data, response)
         item['Ref Group Attr 2'] = ''
         item['Ref Quantity'] = ''
-        
-        # Extract from App script
-        item['Ref Images'] = self.extract_main_images(response) or ''
-        item['Ref Dimensions'] = self.extract_dimensions(response) or ''
-        item['Ref Highlights'] = self.extract_highlights(response) or ''
 
-        # ALWAYS yield the item, even if some fields are empty
-        self.logger.info(f"Yielding product: {item['Ref Product Name'] or 'Unknown'} - {response.url}")
+        # Extract from App script (pre-parsed)
+        if json_app_data:
+            item['Ref Images'] = self._extract_main_images_optimized(json_app_data, response)
+            item['Ref Dimensions'] = self._extract_dimensions_optimized(json_app_data, response)
+            item['Ref Highlights'] = self._extract_highlights_optimized(response)
+        else:
+            item['Ref Images'] = ''
+            item['Ref Dimensions'] = ''
+            item['Ref Highlights'] = self._extract_highlights_optimized(response)
+
         yield item
 
-    # ORIGINAL EXTRACTORS - KEEP ALL OF THESE!
-    
-    def extract_product_name(self, response):
-        # Try JSON-LD first
-        for script in response.xpath('//script[@type="application/ld+json"]/text()').getall():
-            try:
-                data = json.loads(script)
-                if isinstance(data, dict):
-                    if data.get('@type') == 'Product' or data.get('@type') == 'ProductGroup':
-                        name = data.get('name')
-                        if name:
-                            return str(name)
-                elif isinstance(data, list):
-                    for item in data:
-                        if isinstance(item, dict):
-                            if item.get('@type') == 'Product' or item.get('@type') == 'ProductGroup':
-                                name = item.get('name')
-                                if name:
-                                    return str(name)
-            except:
-                continue
-        
-        # Fallback to XPath
-        selectors = [
-            '//*[@id="contentId"]/div/div[1]/div[2]/div[2]/h1/text()',
-            '//h1/text()',
-            '//meta[@property="og:title"]/@content'
-        ]
-        return self.extract_using_selectors(response, selectors)
-
-    def extract_price(self, response):
-        for script in response.xpath('//script[@type="application/ld+json"]/text()').getall():
-            try:
-                data = json.loads(script)
-                if isinstance(data, dict):
-                    if data.get('@type') == 'Product' or data.get('@type') == 'ProductGroup':
-                        offers = data.get('offers', {})
-                        if isinstance(offers, dict) and 'price' in offers:
-                            return str(offers['price'])
-                        elif isinstance(offers, list) and len(offers) > 0:
-                            return str(offers[0].get('price', ''))
-                elif isinstance(data, list):
-                    for item in data:
-                        if isinstance(item, dict):
-                            if item.get('@type') == 'Product' or item.get('@type') == 'ProductGroup':
-                                offers = item.get('offers', {})
-                                if isinstance(offers, dict) and 'price' in offers:
-                                    return str(offers['price'])
-            except:
-                continue
+    # Optimized extractor methods
+    def _extract_sku_optimized(self, product_data, response):
+        if product_data:
+            sku = product_data.get('sku')
+            if sku:
+                return str(sku)
         return ''
 
-    def extract_sku(self, response):
-        for script in response.xpath('//script[@type="application/ld+json"]/text()').getall():
-            try:
-                data = json.loads(script)
-                if isinstance(data, dict):
-                    if data.get('@type') == 'Product' or data.get('@type') == 'ProductGroup':
-                        sku = data.get('sku')
-                        if sku:
-                            return str(sku)
-                elif isinstance(data, list):
-                    for item in data:
-                        if isinstance(item, dict):
-                            if item.get('@type') == 'Product' or item.get('@type') == 'ProductGroup':
-                                sku = item.get('sku')
-                                if sku:
-                                    return str(sku)
-            except:
-                continue
+    def _extract_product_name_optimized(self, product_data, response):
+        if product_data:
+            name = product_data.get('name')
+            if name:
+                return str(name)
+        # Fallback to fast XPath
+        result = response.xpath('//h1/text()').get()
+        if result and result.strip():
+            return result.strip()
+        result = response.xpath('//*[@id="contentId"]/div/div[1]/div[2]/div[2]/h1/text()').get()
+        return result.strip() if result else ''
+
+    def _extract_price_optimized(self, product_data, response):
+        if product_data:
+            offers = product_data.get('offers', {})
+            if isinstance(offers, dict) and 'price' in offers:
+                return str(offers['price'])
         return ''
 
-    def extract_mpn(self, response):
-        for script in response.xpath('//script[@type="application/ld+json"]/text()').getall():
-            try:
-                data = json.loads(script)
-                if isinstance(data, dict):
-                    if data.get('@type') == 'Product' or data.get('@type') == 'ProductGroup':
-                        mpn = data.get('mpn')
-                        if mpn:
-                            return str(mpn)
-                elif isinstance(data, list):
-                    for item in data:
-                        if isinstance(item, dict):
-                            if item.get('@type') == 'Product' or item.get('@type') == 'ProductGroup':
-                                mpn = item.get('mpn')
-                                if mpn:
-                                    return str(mpn)
-            except:
-                continue
+    def _extract_mpn_optimized(self, product_data, response):
+        if product_data:
+            mpn = product_data.get('mpn')
+            if mpn:
+                return str(mpn)
         return ''
 
-    def extract_gtin(self, response):
+    def _extract_gtin_optimized(self, product_data, response):
         return ''
 
-    def extract_brand(self, response):
-        for script in response.xpath('//script[@type="application/ld+json"]/text()').getall():
-            try:
-                data = json.loads(script)
-                if isinstance(data, dict):
-                    if data.get('@type') == 'Product' or data.get('@type') == 'ProductGroup':
-                        brand = data.get('brand', {})
-                        if isinstance(brand, dict):
-                            return brand.get('name', '')
-                        else:
-                            return str(brand)
-                elif isinstance(data, list):
-                    for item in data:
-                        if isinstance(item, dict):
-                            if item.get('@type') == 'Product' or item.get('@type') == 'ProductGroup':
-                                brand = item.get('brand', {})
-                                if isinstance(brand, dict):
-                                    return brand.get('name', '')
-                                else:
-                                    return str(brand)
-            except:
-                continue
+    def _extract_brand_optimized(self, product_data, response):
+        if product_data:
+            brand = product_data.get('brand', {})
+            if isinstance(brand, dict):
+                return brand.get('name', '')
+            else:
+                return str(brand)
         return ''
 
-    def extract_main_image(self, response):
-        for script in response.xpath('//script[@type="application/ld+json"]/text()').getall():
-            try:
-                data = json.loads(script)
-                if isinstance(data, dict):
-                    if data.get('@type') == 'Product' or data.get('@type') == 'ProductGroup':
-                        image = data.get('image')
-                        if image:
-                            if isinstance(image, list) and len(image) > 0:
-                                return str(image[0])
-                            return str(image)
-                elif isinstance(data, list):
-                    for item in data:
-                        if isinstance(item, dict):
-                            if item.get('@type') == 'Product' or item.get('@type') == 'ProductGroup':
-                                image = item.get('image')
-                                if image:
-                                    if isinstance(image, list) and len(image) > 0:
-                                        return str(image[0])
-                                    return str(image)
-            except:
-                continue
+    def _extract_main_image_optimized(self, product_data, response):
+        if product_data:
+            image = product_data.get('image')
+            if image:
+                return str(image)
         return ''
 
-    def extract_category(self, response):
-        for script in response.xpath('//script[@type="application/ld+json"]/text()').getall():
-            try:
-                data = json.loads(script)
-                if isinstance(data, dict) and data.get('@type') == 'BreadcrumbList':
-                    categories = []
-                    for item in data.get('itemListElement', []):
-                        item_data = item.get('item', {})
-                        name = item_data.get('name', '')
-                        if name and name.lower() not in ['home', 'shop', 'all']:
-                            categories.append(name)
-                    if len(categories) > 1:
-                        categories = categories[:-1]
-                    if categories:
-                        return ' > '.join(categories)
-                elif isinstance(data, list):
-                    for item in data:
-                        if isinstance(item, dict) and item.get('@type') == 'BreadcrumbList':
-                            categories = []
-                            for element in item.get('itemListElement', []):
-                                item_data = element.get('item', {})
-                                name = item_data.get('name', '')
-                                if name and name.lower() not in ['home', 'shop', 'all']:
-                                    categories.append(name)
-                            if len(categories) > 1:
-                                categories = categories[:-1]
-                            if categories:
-                                return ' > '.join(categories)
-            except:
-                continue
+    def _extract_category_optimized(self, breadcrumb_data, response):
+        if breadcrumb_data:
+            categories = []
+            for item in breadcrumb_data.get('itemListElement', []):
+                item_data = item.get('item', {})
+                name = item_data.get('name', '')
+                if name and name.lower() not in ['home', 'shop', 'all']:
+                    categories.append(name)
+            if len(categories) > 1:
+                categories = categories[:-1]
+            if categories:
+                return ' > '.join(categories)
         return ''
 
-    def extract_category_url(self, response):
-        for script in response.xpath('//script[@type="application/ld+json"]/text()').getall():
-            try:
-                data = json.loads(script)
-                if isinstance(data, dict) and data.get('@type') == 'BreadcrumbList':
-                    urls = []
-                    for item in data.get('itemListElement', []):
-                        item_data = item.get('item', {})
-                        url = item_data.get('@id', '')
-                        if url:
-                            urls.append(url)
-                    if len(urls) >= 2:
-                        return urls[-2]
-                elif isinstance(data, list):
-                    for item in data:
-                        if isinstance(item, dict) and item.get('@type') == 'BreadcrumbList':
-                            urls = []
-                            for element in item.get('itemListElement', []):
-                                item_data = element.get('item', {})
-                                url = item_data.get('@id', '')
-                                if url:
-                                    urls.append(url)
-                            if len(urls) >= 2:
-                                return urls[-2]
-            except:
-                continue
+    def _extract_category_url_optimized(self, breadcrumb_data, response):
+        if breadcrumb_data:
+            urls = []
+            for item in breadcrumb_data.get('itemListElement', []):
+                item_data = item.get('item', {})
+                url = item_data.get('@id', '')
+                if url:
+                    urls.append(url)
+            if len(urls) >= 2:
+                return urls[-2]
         return ''
 
-    def extract_quantity(self, response):
+    def _extract_status_optimized(self, product_data, response):
+        if product_data:
+            offers = product_data.get('offers', {})
+            if isinstance(offers, dict):
+                availability = str(offers.get('availability', '')).lower()
+                if 'instock' in availability:
+                    return 'Active'
+                elif 'outofstock' in availability or 'soldout' in availability:
+                    return 'Out of Stock'
+                elif 'preorder' in availability:
+                    return 'Active'
         return ''
 
-    def extract_status(self, response):
-        for script in response.xpath('//script[@type="application/ld+json"]/text()').getall():
-            try:
-                data = json.loads(script)
-                if isinstance(data, dict):
-                    if data.get('@type') == 'Product' or data.get('@type') == 'ProductGroup':
-                        offers = data.get('offers', {})
-                        if isinstance(offers, dict):
-                            availability = str(offers.get('availability', '')).lower()
-                            if 'instock' in availability:
-                                return 'Active'
-                            elif 'outofstock' in availability or 'soldout' in availability:
-                                return 'Out of Stock'
-                            elif 'preorder' in availability:
-                                return 'Active'
-                elif isinstance(data, list):
-                    for item in data:
-                        if isinstance(item, dict):
-                            if item.get('@type') == 'Product' or item.get('@type') == 'ProductGroup':
-                                offers = item.get('offers', {})
-                                if isinstance(offers, dict):
-                                    availability = str(offers.get('availability', '')).lower()
-                                    if 'instock' in availability:
-                                        return 'Active'
-                                    elif 'outofstock' in availability or 'soldout' in availability:
-                                        return 'Out of Stock'
-                                    elif 'preorder' in availability:
-                                        return 'Active'
-            except:
-                continue
-        return ''
-
-    def extract_product_id(self, response):
+    def _extract_product_id_optimized(self, response):
         product_id = response.xpath('//div[@data-id]/@data-id').get()
         if product_id:
             return product_id
         return ''
 
+    def _extract_group_attr1_optimized(self, product_data, response):
+        if product_data:
+            color = product_data.get('color')
+            if color:
+                return str(color)
+        return ''
+
+    def _extract_main_images_optimized(self, json_app_data, response):
+        image_urls = []
+        if json_app_data:
+            try:
+                gallery = json_app_data.get('data', {}).get('content', {}).get('gallery', [])
+                if isinstance(gallery, list):
+                    for img in gallery:
+                        if isinstance(img, dict):
+                            original_url = img.get('original')
+                            if original_url:
+                                image_urls.append(original_url)
+            except:
+                pass
+        return '\n'.join(image_urls) if image_urls else ''
+
+    def _extract_dimensions_optimized(self, json_app_data, response):
+        if not json_app_data:
+            return ''
+
+        try:
+            content = json_app_data.get('data', {}).get('content', {})
+            result = {}
+
+            # Check multiple sources for dimensions
+            dimension_sources = [
+                content.get('setIncludes', {}).get('items', []),
+                content.get('additionalItems', {}).get('items', []),
+                content.get('productLayouts', {}).get('simpleItems', [])
+            ]
+
+            for source in dimension_sources:
+                if isinstance(source, list):
+                    for item in source:
+                        if not isinstance(item, dict):
+                            continue
+
+                        item_short_name = item.get('itemShortName', '')
+                        dimension = item.get('dimension', {})
+                        if not dimension or not item_short_name:
+                            continue
+
+                        image_url = dimension.get('image', {}).get('url', '') if isinstance(
+                            dimension.get('image'), dict) else ''
+                        if image_url and not self.is_valid_image_url(image_url):
+                            image_url = ''
+
+                        dimensions_list = dimension.get('list', [])
+                        dimension_data = [dim for dim in dimensions_list if dim and isinstance(dim, str)]
+
+                        if dimension_data:
+                            result[item_short_name.lower()] = {
+                                "url": image_url,
+                                "data": dimension_data
+                            }
+
+            # Check configurables
+            for item in content.get('setIncludes', {}).get('items', []):
+                if isinstance(item, dict):
+                    for config in item.get('configurables', []):
+                        if isinstance(config, dict):
+                            for option in config.get('options', []):
+                                if isinstance(option, dict):
+                                    item_short_name = option.get('itemShortName', '')
+                                    dimension = option.get('dimension', {})
+                                    if not dimension or not item_short_name:
+                                        continue
+
+                                    image_url = dimension.get('image', {}).get('url', '') if isinstance(
+                                        dimension.get('image'), dict) else ''
+                                    if image_url and not self.is_valid_image_url(image_url):
+                                        image_url = ''
+
+                                    dimensions_list = dimension.get('list', [])
+                                    dimension_data = [dim for dim in dimensions_list if dim and isinstance(dim, str)]
+
+                                    if dimension_data:
+                                        result[item_short_name.lower()] = {
+                                            "url": image_url,
+                                            "data": dimension_data
+                                        }
+
+            # Check accordion dimensions
+            if not result:
+                dimensions_data = content.get('accordion', {}).get('dimensions', {})
+                if dimensions_data and isinstance(dimensions_data, dict):
+                    dimension_list = dimensions_data.get('dimensionList', [])
+                    image_url = dimensions_data.get('image', {}).get('url', '') if isinstance(
+                        dimensions_data.get('image'), dict) else ''
+                    if image_url and not self.is_valid_image_url(image_url):
+                        image_url = ''
+
+                    dimension_data = [dim for dim in dimension_list if dim and isinstance(dim, str)]
+
+                    if dimension_data:
+                        result["dimensions"] = {
+                            "url": image_url,
+                            "data": dimension_data
+                        }
+
+            return json.dumps(result, indent=2) if result else ''
+
+        except Exception as e:
+            self.logger.debug(f"Error extracting dimensions: {e}")
+            return ''
+
+    def _extract_highlights_optimized(self, response):
+        """Optimized highlights extraction"""
+        highlights = []
+        highlight_items = response.xpath('//div[contains(@class, "product-hightlights-items-item")]')
+
+        for item in highlight_items:
+            title = item.xpath('.//span[contains(@class, "product-hightlights-items-item-title")]/text()').get()
+            desc = item.xpath('.//p[contains(@class, "product-hightlights-items-item-desc")]/text()').get()
+            if title:
+                highlights.append({
+                    'title': title.strip() if title else '',
+                    'desc': desc.strip() if desc else ''
+                })
+
+        return json.dumps(highlights, indent=2) if highlights else ''
+
+    # Original methods kept for backward compatibility
+    def extract_product_name(self, response):
+        return self._extract_product_name_optimized(None, response)
+
+    def extract_price(self, response):
+        return self._extract_price_optimized(None, response)
+
+    def extract_sku(self, response):
+        return self._extract_sku_optimized(None, response)
+
+    def extract_mpn(self, response):
+        return self._extract_mpn_optimized(None, response)
+
+    def extract_gtin(self, response):
+        return ''
+
+    def extract_brand(self, response):
+        return self._extract_brand_optimized(None, response)
+
+    def extract_main_image(self, response):
+        return self._extract_main_image_optimized(None, response)
+
+    def extract_category(self, response):
+        return self._extract_category_optimized(None, response)
+
+    def extract_category_url(self, response):
+        return self._extract_category_url_optimized(None, response)
+
+    def extract_quantity(self, response):
+        return ''
+
+    def extract_status(self, response):
+        return self._extract_status_optimized(None, response)
+
+    def extract_product_id(self, response):
+        return self._extract_product_id_optimized(response)
+
     def extract_variant_id(self, response):
         return ''
 
     def extract_group_attr1(self, response, attr_num):
-        for script in response.xpath('//script[@type="application/ld+json"]/text()').getall():
-            try:
-                data = json.loads(script)
-                if isinstance(data, dict):
-                    if data.get('@type') == 'Product' or data.get('@type') == 'ProductGroup':
-                        color = data.get('color')
-                        if color:
-                            return str(color)
-                elif isinstance(data, list):
-                    for item in data:
-                        if isinstance(item, dict):
-                            if item.get('@type') == 'Product' or item.get('@type') == 'ProductGroup':
-                                color = item.get('color')
-                                if color:
-                                    return str(color)
-            except:
-                continue
-        return ''
+        return self._extract_group_attr1_optimized(None, response)
 
     def extract_group_attr2(self, response, attr_num):
         return ''
@@ -540,7 +596,7 @@ class ProductFetcher(Spider):
                 result = response.xpath(selector).get()
             else:
                 result = response.css(selector).get()
-            
+
             if result:
                 cleaned = result.strip()
                 if cleaned:
@@ -548,214 +604,42 @@ class ProductFetcher(Spider):
         return ''
 
     def extract_highlights(self, response):
-        highlights = []
-        highlight_items = response.xpath('//div[contains(@class, "product-hightlights-items-item")]')
-        for item in highlight_items:
-            title = item.xpath('.//span[contains(@class, "product-hightlights-items-item-title")]/text()').get()
-            desc = item.xpath('.//p[contains(@class, "product-hightlights-items-item-desc")]/text()').get()
-            if title:
-                highlights.append({
-                    'title': title.strip() if title else '',
-                    'desc': desc.strip() if desc else ''
-                })
-        return json.dumps(highlights, indent=2) if highlights else ''
+        return self._extract_highlights_optimized(response)
 
     def extract_main_images(self, response):
-        image_urls = []
-        json_script = response.xpath('//script[@data-hypernova-key="App"]/text()').get()
-        if json_script:
-            try:
-                if json_script.startswith('<!--'):
-                    json_script = json_script[4:]
-                if json_script.endswith('-->'):
-                    json_script = json_script[:-3]
-                json_script = json_script.strip()
-                data = json.loads(json_script)
-                gallery = data.get('data', {}).get('content', {}).get('gallery', [])
-                if isinstance(gallery, list):
-                    for img in gallery:
-                        if isinstance(img, dict):
-                            original_url = img.get('original')
-                            if original_url:
-                                image_urls.append(original_url)
-            except Exception as e:
-                self.logger.debug(f"Failed to extract images: {e}")
-        return '\n'.join(image_urls) if image_urls else ''
+        return ''
 
     def extract_dimensions(self, response):
-        json_script = response.xpath('//script[@data-hypernova-key="App"]/text()').get()
-        if not json_script:
-            return ''
-
-        try:
-            if json_script.startswith('<!--'):
-                json_script = json_script[4:]
-            if json_script.endswith('-->'):
-                json_script = json_script[:-3]
-            json_script = json_script.strip()
-            data = json.loads(json_script)
-            content = data.get('data', {}).get('content', {})
-            
-            result = {}
-            
-            # Check multiple sources
-            setIncludes = content.get('setIncludes', {})
-            items = setIncludes.get('items', [])
-            
-            for item in items:
-                if not isinstance(item, dict):
-                    continue
-                
-                item_short_name = item.get('itemShortName', '')
-                dimension = item.get('dimension', {})
-                if not dimension or not item_short_name:
-                    continue
-                
-                image_url = ''
-                if isinstance(dimension.get('image'), dict):
-                    image_url = dimension.get('image', {}).get('url', '')
-                
-                dimensions_list = dimension.get('list', [])
-                dimension_data = [dim for dim in dimensions_list if dim and isinstance(dim, str)]
-                
-                if dimension_data:
-                    result[item_short_name.lower()] = {
-                        "url": image_url,
-                        "data": dimension_data
-                    }
-            
-            # Check additional items
-            additional_items = content.get('additionalItems', {}).get('items', [])
-            for item in additional_items:
-                if not isinstance(item, dict):
-                    continue
-                
-                item_short_name = item.get('itemShortName', '')
-                dimension = item.get('dimension', {})
-                if not dimension or not item_short_name:
-                    continue
-                
-                image_url = ''
-                if isinstance(dimension.get('image'), dict):
-                    image_url = dimension.get('image', {}).get('url', '')
-                
-                dimensions_list = dimension.get('list', [])
-                dimension_data = [dim for dim in dimensions_list if dim and isinstance(dim, str)]
-                
-                if dimension_data:
-                    result[item_short_name.lower()] = {
-                        "url": image_url,
-                        "data": dimension_data
-                    }
-            
-            # Check simple items
-            simple_items = content.get('productLayouts', {}).get('simpleItems', [])
-            if isinstance(simple_items, list):
-                for item in simple_items:
-                    if not isinstance(item, dict):
-                        continue
-                    
-                    item_short_name = item.get('itemShortName', '')
-                    dimension = item.get('dimension', {})
-                    if not dimension or not item_short_name:
-                        continue
-                    
-                    image_url = ''
-                    if isinstance(dimension.get('image'), dict):
-                        image_url = dimension.get('image', {}).get('url', '')
-                    
-                    dimensions_list = dimension.get('list', [])
-                    dimension_data = [dim for dim in dimensions_list if dim and isinstance(dim, str)]
-                    
-                    if dimension_data:
-                        result[item_short_name.lower()] = {
-                            "url": image_url,
-                            "data": dimension_data
-                        }
-            
-            # Check configurables
-            for item in items:
-                if not isinstance(item, dict):
-                    continue
-                
-                configurables = item.get('configurables', [])
-                for config in configurables:
-                    if not isinstance(config, dict):
-                        continue
-                    
-                    for option in config.get('options', []):
-                        if not isinstance(option, dict):
-                            continue
-                        
-                        item_short_name = option.get('itemShortName', '')
-                        dimension = option.get('dimension', {})
-                        if not dimension or not item_short_name:
-                            continue
-                        
-                        image_url = ''
-                        if isinstance(dimension.get('image'), dict):
-                            image_url = dimension.get('image', {}).get('url', '')
-                        
-                        dimensions_list = dimension.get('list', [])
-                        dimension_data = [dim for dim in dimensions_list if dim and isinstance(dim, str)]
-                        
-                        if dimension_data:
-                            result[item_short_name.lower()] = {
-                                "url": image_url,
-                                "data": dimension_data
-                            }
-            
-            # Check accordion dimensions
-            if not result:
-                dimensions_data = content.get('accordion', {}).get('dimensions', {})
-                if dimensions_data and isinstance(dimensions_data, dict):
-                    dimension_list = dimensions_data.get('dimensionList', [])
-                    image_url = ''
-                    if isinstance(dimensions_data.get('image'), dict):
-                        image_url = dimensions_data.get('image', {}).get('url', '')
-                    
-                    dimension_data = [dim for dim in dimension_list if dim and isinstance(dim, str)]
-                    
-                    if dimension_data:
-                        result["dimensions"] = {
-                            "url": image_url,
-                            "data": dimension_data
-                        }
-            
-            return json.dumps(result, indent=2) if result else ''
-            
-        except Exception as e:
-            self.logger.debug(f"Error extracting dimensions: {e}")
-            return ''
+        return ''
 
     def is_valid_image_url(self, url):
         if not url or not isinstance(url, str):
             return False
-        
+
         image_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.bmp']
         url_lower = url.lower()
-        
+
         if not (url_lower.startswith('http://') or url_lower.startswith('https://')):
             return False
-        
+
         if not any(url_lower.endswith(ext) for ext in image_extensions):
             if not any(ext in url_lower for ext in image_extensions):
                 return False
-        
+
         return True
 
     def clean_price(self, price_text):
         if not price_text:
             return ''
-        
+
         cleaned = re.sub(r'[^\d.,]', '', price_text)
-        
+
         if ',' in cleaned and '.' in cleaned:
             if cleaned.rfind(',') > cleaned.rfind('.'):
                 cleaned = cleaned.replace('.', '').replace(',', '.')
             else:
                 cleaned = cleaned.replace(',', '')
-        
+
         try:
             price_float = float(cleaned)
             return f"{price_float:.2f}"
