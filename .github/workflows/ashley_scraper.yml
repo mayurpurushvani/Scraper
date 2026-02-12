@@ -237,8 +237,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        chunk_id: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
-        total_chunks: [16]
+        chunk_id: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+        total_chunks: [20]
         
     steps:
       - uses: actions/checkout@v4
