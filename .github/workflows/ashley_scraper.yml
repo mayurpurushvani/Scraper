@@ -317,7 +317,7 @@ jobs:
           echo "=== Scraping Product Chunk $CHUNK_ID ($URL_COUNT URLs) ==="
           
           # Run product scraper
-          python scripts/run_ashley_scraper.py \
+          python colemanfurniture_scraper/scripts/run_ashley_scraper.py \
             --urls-file "$CHUNK_FILE" \
             --product-concurrency ${{ github.event.inputs.product_concurrency }} \
             --job-id "chunk_${CHUNK_ID}" \
