@@ -73,7 +73,7 @@ jobs:
           # If total pages is 0, set to reasonable default (Ashley has ~150 pages)
           [ "$TOTAL" -eq 0 ] && TOTAL=150
           
-          # Calculate number of jobs
+            # Calculate number of jobs
           JOBS=$(( (TOTAL + PER_JOB - 1) / PER_JOB ))
           
           # Create matrix for parallel jobs
