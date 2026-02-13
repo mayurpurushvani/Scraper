@@ -252,8 +252,8 @@ jobs:
           lftp -u "$FTP_USER","$FTP_PASS" "$FTP_HOST" <<EOF
           set ftp:ssl-allow no
           set ssl:verify-certificate no
-          mkdir -p $FTP_BASE_DIR/coleman
-          cd $FTP_BASE_DIR/coleman
+          mkdir -p $FTP_BASE_DIR
+          cd $FTP_BASE_DIR
           put products_full.csv -o $FILE
           ls -la $FILE
           bye
