@@ -216,9 +216,12 @@ jobs:
       - name: Build output filename
         id: meta
         run: |
-          DOMAIN="${{ needs.plan.outputs.domain }}"
+          # Extract the original URL from the plan step or input
+          ORIGINAL_URL="${{ github.event.inputs.website_url }}"
+          # Extract domain without protocol and replace dots with underscores
+          CLEAN_DOMAIN=$(echo "$ORIGINAL_URL" | sed -E 's|https?://||' | sed 's|/.*||' | sed 's/\./_/g')
           DATE=$(date +%F)
-          FILENAME="${DOMAIN}_${DATE}.csv"
+          FILENAME="${CLEAN_DOMAIN}_${DATE}.csv"
           echo "name=$FILENAME" >> $GITHUB_OUTPUT
           echo "Generated filename: $FILENAME"
           
