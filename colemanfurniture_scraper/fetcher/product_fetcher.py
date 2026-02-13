@@ -2,7 +2,6 @@ import gzip
 import xml.etree.ElementTree as ET
 import json
 import re
-import random
 from datetime import datetime
 from urllib.parse import urlparse, urljoin
 from scrapy import Spider, Request
@@ -23,16 +22,16 @@ class ProductFetcher(Spider):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         
-        # Ashley mode flags
+        # Ashley mode flags - ADD THESE
         self.is_ashley = kwargs.get('is_ashley', False)
         self.ashley_urls = kwargs.get('ashley_urls', [])
         
-        # UNIVERSAL CHUNK PROCESSING PARAMETERS
+        # CHUNK MODE parameters - ADD THESE
+        self.chunk_mode = kwargs.get('chunk_mode', False)
         self.chunk_id = kwargs.get('chunk_id', 0)
         self.total_chunks = kwargs.get('total_chunks', 1)
-        self.chunk_mode = kwargs.get('chunk_mode', False)
-        self.chunk_size = kwargs.get('chunk_size', 0)  # 0 means auto-calculate
-        
+        self.chunk_size = kwargs.get('chunk_size', 0)  # Add this for chunk size control
+
         self.website_url = kwargs.get('website_url')
         if not self.website_url:
             raise ValueError("website_url parameter is required")
@@ -46,24 +45,7 @@ class ProductFetcher(Spider):
         self.domain = parsed_url.netloc
         self.base_domain = '.'.join(self.domain.split('.')[-2:]).replace('.', '_')
         
-        # Cache for JSON-LD parsing
-        self.json_ld_cache = {}
-        self.json_ld_xpath = '//script[@type="application/ld+json"]/text()'
-        
-        # Rotating user agents
-        self.user_agents = [
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0',
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15',
-        ]
-               
-        # Log chunk info if in chunk mode
-        if self.chunk_mode:
-            self.logger.info(f"📦 Chunk {self.chunk_id + 1}/{self.total_chunks} initialized for {self.website_url}")
-        
-        # Skip sitemap discovery for Ashley mode
+        # Only process sitemaps if not in Ashley mode
         if not self.is_ashley:
             try:
                 sitemap_processor = SitemapProcessor()
@@ -73,58 +55,31 @@ class ProductFetcher(Spider):
                 self.all_sitemaps = sitemap_processor.extract_all_sitemaps(self.sitemap_index_url)
                 self.logger.info(f"Total sitemaps discovered: {len(self.all_sitemaps)}")
                 
-                # APPLY CHUNK LOGIC TO SITEMAPS IF IN CHUNK MODE
-                if self.chunk_mode and self.total_chunks > 1:
-                    # Split sitemaps into chunks
-                    chunk_size = len(self.all_sitemaps) // self.total_chunks
-                    if self.chunk_size > 0:
-                        chunk_size = self.chunk_size
-                    
-                    start_idx = self.chunk_id * chunk_size
-                    
-                    if self.chunk_id == self.total_chunks - 1:
-                        self.sitemap_chunk = self.all_sitemaps[start_idx:]
-                    else:
-                        self.sitemap_chunk = self.all_sitemaps[start_idx:start_idx + chunk_size]
-                    
-                    self.logger.info(f"📦 Chunk {self.chunk_id + 1}/{self.total_chunks}: Processing {len(self.sitemap_chunk)} sitemaps")
-                else:
-                    self.sitemap_chunk = sitemap_processor.get_sitemap_chunks(
-                        self.all_sitemaps, 
-                        self.sitemap_offset, 
-                        self.max_sitemaps
-                    )
-                    self.logger.info(f"This job will process {len(self.sitemap_chunk)} sitemaps")
+                self.sitemap_chunk = sitemap_processor.get_sitemap_chunks(
+                    self.all_sitemaps, 
+                    self.sitemap_offset, 
+                    self.max_sitemaps
+                )
+                
+                self.logger.info(f"This job will process {len(self.sitemap_chunk)} sitemaps")
                 
             except Exception as e:
                 self.logger.error(f"Failed to discover sitemap: {e}")
                 raise
     
-    def get_headers(self, referer=None):
-        """Generate random browser headers"""
-        headers = {
-            'User-Agent': random.choice(self.user_agents),
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+    def get_headers(self):
+        """Get headers for Ashley requests"""
+        return {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.5',
             'Accept-Encoding': 'gzip, deflate, br',
             'Connection': 'keep-alive',
             'Upgrade-Insecure-Requests': '1',
-            'Sec-Fetch-Dest': 'document',
-            'Sec-Fetch-Mode': 'navigate',
-            'Sec-Fetch-Site': 'none',
-            'Sec-Fetch-User': '?1',
             'Cache-Control': 'max-age=0',
         }
-        
-        if referer:
-            headers['Referer'] = referer
-        
-        return headers
           
     def start_requests(self):
-        """Handle both Ashley mode with direct URLs and sitemap mode with chunk support"""
-        
-        # ASHLEY MODE with direct URLs
         if self.is_ashley:
             # Filter URLs for this chunk if in chunk mode
             urls_to_process = self.ashley_urls
@@ -135,16 +90,14 @@ class ProductFetcher(Spider):
                     chunk_size = self.chunk_size
                 else:
                     chunk_size = len(self.ashley_urls) // self.total_chunks
+                    if len(self.ashley_urls) % self.total_chunks != 0:
+                        chunk_size += 1
                 
                 start_idx = self.chunk_id * chunk_size
+                end_idx = start_idx + chunk_size if self.chunk_id < self.total_chunks - 1 else len(self.ashley_urls)
+                urls_to_process = self.ashley_urls[start_idx:end_idx]
                 
-                if self.chunk_id == self.total_chunks - 1:
-                    # Last chunk gets remaining URLs
-                    urls_to_process = self.ashley_urls[start_idx:]
-                else:
-                    urls_to_process = self.ashley_urls[start_idx:start_idx + chunk_size]
-                
-                self.logger.info(f"🚀 Ashley Chunk {self.chunk_id + 1}/{self.total_chunks}: Processing {len(urls_to_process)} URLs")
+                self.logger.info(f"🚀 Ashley Chunk {self.chunk_id + 1}/{self.total_chunks}: Processing {len(urls_to_process)} URLs (indices {start_idx}-{end_idx-1})")
             else:
                 self.logger.info(f"🚀 Ashley mode: Processing {len(self.ashley_urls)} direct product URLs")
             
@@ -159,8 +112,8 @@ class ProductFetcher(Spider):
                     url,
                     callback=self.parse_product_page_with_check,
                     meta={
-                        'url': url, 
-                        'is_ashley': True, 
+                        'url': url,
+                        'is_ashley': True,
                         'retry_count': 0,
                         'chunk_id': self.chunk_id,
                         'chunk_mode': self.chunk_mode
@@ -183,17 +136,11 @@ class ProductFetcher(Spider):
             yield Request(
                 sitemap_url,
                 callback=self.parse_product_sitemap,
-                meta={
-                    'sitemap_level': 1,
-                    'chunk_id': self.chunk_id,
-                    'chunk_mode': self.chunk_mode
-                },
-                errback=self.handle_sitemap_error,
-                dont_filter=True
+                meta={'sitemap_level': 1},
+                errback=self.handle_sitemap_error
             )
     
     def parse_product_sitemap(self, response):
-        """Parse sitemap and apply chunking to URLs if needed"""
         if response.url.endswith('.gz'):
             content = gzip.decompress(response.body)
             root = ET.fromstring(content)
@@ -201,344 +148,117 @@ class ProductFetcher(Spider):
             root = ET.fromstring(response.body)
         
         ns = {'ns': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
-        url_elements = root.findall('ns:url/ns:loc', ns)
-        all_urls = [elem.text for elem in url_elements if elem.text]
+        all_urls = [url.text for url in root.findall('ns:url/ns:loc', ns) if url.text]
         
-        # Apply max URLs per sitemap limit
         if self.max_urls_per_sitemap > 0:
             all_urls = all_urls[:self.max_urls_per_sitemap]
         
-        # Filter PLP vs PDP
+        self.logger.info(f"Processing {len(all_urls)} URLs from sitemap")
+        
         plp_count = 0
         pdp_count = 0
-        pdp_urls = []
 
         for url in all_urls:
             if self._is_plp_url(url):
                 plp_count += 1
                 continue
-            pdp_urls.append(url)
-        
-        pdp_count = len(pdp_urls)
-        
-        # APPLY URL-LEVEL CHUNKING IF IN CHUNK MODE
-        urls_to_process = pdp_urls
-        chunk_info = ""
-        
-        if self.chunk_mode and self.total_chunks > 1:
-            # Calculate chunk size for URLs within this sitemap
-            if self.chunk_size > 0:
-                chunk_size = self.chunk_size
-            else:
-                chunk_size = len(pdp_urls) // self.total_chunks
-            
-            if chunk_size > 0:
-                start_idx = self.chunk_id * chunk_size
-                
-                if self.chunk_id == self.total_chunks - 1:
-                    urls_to_process = pdp_urls[start_idx:]
-                else:
-                    urls_to_process = pdp_urls[start_idx:start_idx + chunk_size]
-                
-                chunk_info = f" (Chunk {self.chunk_id + 1}/{self.total_chunks}: {len(urls_to_process)} URLs)"
-        
-        self.logger.info(f"Sitemap {response.url}: {len(all_urls)} total, {plp_count} PLP, {pdp_count} PDP{chunk_info}")
-        
-        for url in urls_to_process:
+            pdp_count += 1
             yield Request(
                 url,
                 callback=self.parse_product_page_with_check,
-                meta={
-                    'url': url,
-                    'chunk_id': self.chunk_id,
-                    'chunk_mode': self.chunk_mode
-                },
-                errback=self.handle_product_error,
-                dont_filter=True
+                meta={'url': url},
+                errback=self.handle_product_error
             )
+        
+        self.logger.info(f"Filtered {plp_count} PLP pages, {pdp_count} PDP pages to scrape")
     
     def _is_plp_url(self, url: str) -> bool:
         parsed_url = urlparse(url)
         path = parsed_url.path.strip('/')
+        
         if not path:
             return True
         return '/' in path
 
-    def _extract_json_ld_data(self, response):
-        """Extract all JSON-LD data from a page"""
-        json_scripts = response.xpath(self.json_ld_xpath).getall()
-        
-        product_data = {
-            'sku': '',
-            'mpn': '',
-            'brand': '',
-            'price': '',
-            'image': '',
-            'color': '',
-            'status': '',
-            'category': '',
-            'category_url': ''
-        }
-        
+    def parse_product_page_with_check(self, response):
+        json_scripts = response.xpath('//script[@type="application/ld+json"]/text()').getall()
+        has_product_json = False
         for script in json_scripts:
             try:
-                # Clean script
-                script_text = script.strip()
-                if script_text.startswith('<!--'):
-                    script_text = script_text[4:]
-                if script_text.endswith('-->'):
-                    script_text = script_text[:-3]
-                script_text = script_text.strip()
-                
-                if not script_text:
-                    continue
-                    
-                data = json.loads(script_text)
-                
-                # Handle both dict and list
+                data = json.loads(script.strip())
                 if isinstance(data, dict):
-                    items = [data]
-                elif isinstance(data, list):
-                    items = data
-                else:
-                    items = []
-                
-                for item in items:
-                    if not isinstance(item, dict):
-                        continue
-                    
-                    item_type = item.get('@type')
-                    
-                    # Product data
-                    if item_type in ('Product', 'ProductGroup') or \
-                       (isinstance(item_type, list) and any(t in ('Product', 'ProductGroup') for t in item_type)):
-                        
-                        if item.get('sku'):
-                            product_data['sku'] = str(item['sku'])
-                        if item.get('mpn'):
-                            product_data['mpn'] = str(item['mpn'])
-                        if item.get('color'):
-                            product_data['color'] = str(item['color'])
-                        if item.get('image'):
-                            product_data['image'] = str(item['image'])
-                        
-                        brand = item.get('brand', {})
-                        if isinstance(brand, dict):
-                            product_data['brand'] = str(brand.get('name', ''))
-                        elif brand:
-                            product_data['brand'] = str(brand)
-                        
-                        offers = item.get('offers', {})
-                        if isinstance(offers, dict):
-                            if offers.get('price'):
-                                product_data['price'] = str(offers['price'])
-                            
-                            availability = str(offers.get('availability', '')).lower()
-                            if 'instock' in availability:
-                                product_data['status'] = 'Active'
-                            elif 'outofstock' in availability or 'soldout' in availability:
-                                product_data['status'] = 'Out of Stock'
-                            elif 'preorder' in availability:
-                                product_data['status'] = 'Active'
-                    
-                    # Breadcrumb data
-                    elif item_type == 'BreadcrumbList':
-                        categories = []
-                        urls = []
-                        
-                        for element in item.get('itemListElement', []):
-                            item_data = element.get('item', {})
-                            name = item_data.get('name', '')
-                            url = item_data.get('@id', '')
-                            
-                            if name and name.lower() not in ['home', 'shop', 'all']:
-                                categories.append(name)
-                            if url:
-                                urls.append(url)
-                        
-                        if len(categories) > 1:
-                            categories = categories[:-1]
-                        if categories:
-                            product_data['category'] = ' > '.join(categories)
-                        
-                        if len(urls) >= 2:
-                            product_data['category_url'] = urls[-2]
-                            
-            except json.JSONDecodeError:
-                continue
-            except Exception:
-                continue
-        
-        return product_data
-
-    def parse_product_page_with_check(self, response):
-        """Parse product page - ALWAYS extract all data, regardless of JSON-LD"""
-        
-        # Check cache for product detection (only for bundle logic, NOT for data extraction)
-        cache_key = response.url
-        if cache_key in self.json_ld_cache:
-            has_product_json = self.json_ld_cache[cache_key]
-        else:
-            # Quick check for product JSON-LD (only used for bundle products)
-            has_product_json = False
-            json_scripts = response.xpath(self.json_ld_xpath).getall()
-            for script in json_scripts[:3]:
-                try:
-                    script_text = script.strip()
-                    if script_text.startswith('<!--'):
-                        script_text = script_text[4:]
-                    if script_text.endswith('-->'):
-                        script_text = script_text[:-3]
-                    script_text = script_text.strip()
-                    
-                    if not script_text:
-                        continue
-                        
-                    data = json.loads(script_text)
-                    if isinstance(data, dict):
-                        if 'Product' in str(data.get('@type', '')):
-                            has_product_json = True
-                            break
-                    elif isinstance(data, list):
-                        for item in data:
-                            if isinstance(item, dict) and 'Product' in str(item.get('@type', '')):
+                    data_type = data.get('@type')
+                    if data_type:
+                        if isinstance(data_type, str):
+                            if 'Product' in data_type:
                                 has_product_json = True
                                 break
-                        if has_product_json:
-                            break
-                except Exception:
-                    continue
-            self.json_ld_cache[cache_key] = has_product_json
-        
-        # Extract JSON-LD data (may be empty if no JSON-LD)
-        json_data = self._extract_json_ld_data(response)
-        
-        # Build item with exact column structure
-        item = {
-            'Ref Product URL': response.url,
-            'Ref Product ID': '',
-            'Ref Variant ID': '',
-            'Ref Category': json_data['category'],
-            'Ref Category URL': json_data['category_url'],
-            'Ref Brand Name': json_data['brand'] if json_data['brand'] else 'Ashley Furniture',  # Default if missing
-            'Ref Product Name': '',
-            'Ref SKU': json_data['sku'],
-            'Ref MPN': json_data['mpn'],
-            'Ref GTIN': '',
-            'Ref Price': json_data['price'],
-            'Ref Main Image': json_data['image'],
-            'Ref Quantity': '',
-            'Ref Group Attr 1': json_data['color'],
-            'Ref Group Attr 2': '',
-            'Ref Images': '',
-            'Ref Dimensions': '',
-            'Ref Status': json_data['status'] if json_data['status'] else 'Active',  # Default if missing
-            'Ref Highlights': '',
-            'Date Scrapped': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        }
-        
-        # ALWAYS extract non-JSON fields - these work regardless of JSON-LD
-        try:
-            product_id = response.xpath('//div[@data-id]/@data-id').get()
-            if product_id:
-                item['Ref Product ID'] = product_id.strip()
-        except Exception:
-            pass
-        
-        try:
-            product_name = response.xpath('//*[@id="contentId"]/div/div[1]/div[2]/div[2]/h1/text()').get()
-            if product_name:
-                item['Ref Product Name'] = product_name.strip()
-        except Exception:
-            pass
-        
-        # ALWAYS extract images - this comes from App script, not JSON-LD
-        try:
-            images = self.extract_main_images(response)
-            if images:
-                item['Ref Images'] = images
-                # If no main image from JSON-LD, use first image
-                if not item['Ref Main Image'] and images:
-                    item['Ref Main Image'] = images.split('\n')[0]
-        except Exception as e:
-            self.logger.error(f"Image extraction failed: {e}")
-        
-        # ALWAYS extract highlights
-        try:
-            highlights = self.extract_highlights(response)
-            if highlights:
-                item['Ref Highlights'] = highlights
-        except Exception as e:
-            self.logger.error(f"Highlight extraction failed: {e}")
-        
-        # ALWAYS extract dimensions
-        try:
-            dimensions = self.extract_dimensions(response)
-            if dimensions:
-                item['Ref Dimensions'] = dimensions
-        except Exception as e:
-            self.logger.error(f"Dimension extraction failed: {e}")
-        
-        # Add chunk metadata
-        if self.chunk_mode:
-            item['Chunk ID'] = str(self.chunk_id)
-            item['Total Chunks'] = str(self.total_chunks)
-        
-        yield item
-        
-        # ONLY use has_product_json for bundle product extraction
+                        elif isinstance(data_type, list):
+                            if any('Product' in str(t) for t in data_type):
+                                has_product_json = True
+                                break
+                    elif data.get('name') and (data.get('offers') or data.get('sku')):
+                        has_product_json = True
+                        break
+                elif isinstance(data, list):
+                    for item in data:
+                        if isinstance(item, dict):
+                            item_type = item.get('@type')
+                            if item_type:
+                                if isinstance(item_type, str) and 'Product' in item_type:
+                                    has_product_json = True
+                                    break
+                                elif isinstance(item_type, list) and any('Product' in str(t) for t in item_type):
+                                    has_product_json = True
+                                    break
+                    if has_product_json:
+                        break
+            except Exception as e:
+                self.logger.debug(f"Error parsing JSON-LD: {e}")
+                continue
         if has_product_json:
-            for bundle_item in self.extract_bundle_products(response):
-                yield bundle_item
+            self.logger.info(f"Found Product JSON-LD for {response.url}")
+            yield from self.parse_product_page(response)
+            yield from self.extract_bundle_products(response)
+        else:
+            self.logger.warning(f"No Product JSON-LD found for {response.url}")
+            yield from self.parse_product_page(response)
     
     def extract_bundle_products(self, response):
-        """Extract bundle products with safety limits and deduplication"""
         json_script = response.xpath('//script[@data-hypernova-key="App"]/text()').get()
         if not json_script:
             return
-        
         try:
-            script = json_script.strip()
-            if script.startswith('<!--'):
-                script = script[4:]
-            if script.endswith('-->'):
-                script = script[:-3]
-            script = script.strip()
-            
-            data = json.loads(script)
-            simple_items = data.get('data', {}).get('content', {}).get('productLayouts', {}).get('simpleItems', [])
-            
+            json_script = json_script.strip()
+            if json_script.startswith('<!--'):
+                json_script = json_script[4:]
+            if json_script.endswith('-->'):
+                json_script = json_script[:-3]
+            json_script = json_script.strip()
+            data = json.loads(json_script)
+            content = data.get('data', {}).get('content', {})
+            product_layouts = content.get('productLayouts', {})
+            simple_items = product_layouts.get('simpleItems', [])
             for item in simple_items:
                 if isinstance(item, dict):
                     sub_product_url = item.get('url')
-                    if not sub_product_url or not isinstance(sub_product_url, str):
+                    item_short_name = item.get('itemShortName', '')
+                    if not sub_product_url or sub_product_url == response.url:
+                        self.logger.info(f"Skipping self-reference or empty URL: {sub_product_url}")
                         continue
-                    
-                    sub_product_url = sub_product_url.strip()
-                    
-                    # Skip if same as parent or already processed
-                    if sub_product_url == response.url:
-                        continue
-                                        
-                    self.logger.info(f"Found bundle product: {sub_product_url}")
+                    self.logger.info(f"Found unique sub-product: {item_short_name}")
                     yield Request(
                         sub_product_url,
                         callback=self.parse_product_page_with_check,
-                        meta={
-                            'url': sub_product_url,
-                            'chunk_id': self.chunk_id,
-                            'chunk_mode': self.chunk_mode
-                        },
-                        errback=self.handle_product_error,
-                        priority=1,
-                        dont_filter=True
+                        meta={'url': sub_product_url},
+                        errback=self.handle_product_error
                     )
         except Exception as e:
             self.logger.error(f"Error extracting bundle products: {e}")
 
-    # Keep all original methods below
     def parse_product_page(self, response):
         item = {}
+
         sku = self.extract_sku(response)
         item['Ref Product URL'] = response.url
         item['Ref SKU'] = sku
@@ -561,7 +281,7 @@ class ProductFetcher(Spider):
         item['Ref Highlights'] = self.extract_highlights(response)
         item['Ref Dimensions'] = self.extract_dimensions(response)
         yield item
-    
+       
     def extract_product_name(self, response):
         selectors = [
             '//*[@id="contentId"]/div/div[1]/div[2]/div[2]/h1/text()'
@@ -569,7 +289,7 @@ class ProductFetcher(Spider):
         return self.extract_using_selectors(response, selectors)
     
     def extract_price(self, response):
-        for script in response.xpath(self.json_ld_xpath).getall():
+        for script in response.xpath('//script[@type="application/ld+json"]/text()').getall():
             try:
                 data = json.loads(script)
                 if data.get('@type') == 'Product' or data.get('@type') == 'ProductGroup':
@@ -581,17 +301,73 @@ class ProductFetcher(Spider):
         return ''
     
     def extract_sku(self, response):
-        for script in response.xpath(self.json_ld_xpath).getall():
+        # Try to get SKU from simpleItems by matching URL
+        json_script = response.xpath('//script[@data-hypernova-key="App"]/text()').get()
+        if json_script:
+            try:
+                json_script = json_script.strip()
+                if json_script.startswith('<!--'):
+                    json_script = json_script[4:]
+                if json_script.endswith('-->'):
+                    json_script = json_script[:-3]
+                json_script = json_script.strip()
+                
+                data = json.loads(json_script)
+                content = data.get('data', {}).get('content', {})
+                product_layouts = content.get('productLayouts', {})
+                simple_items = product_layouts.get('simpleItems', [])
+                
+                current_url = response.url.rstrip('/')
+                
+                for item in simple_items:
+                    if isinstance(item, dict):
+                        item_url = item.get('url', '').rstrip('/')
+                        if item_url and item_url == current_url:
+                            sku = item.get('sku', '')
+                            if sku:
+                                return sku
+            except Exception as e:
+                self.logger.debug(f"Error extracting SKU from simpleItems: {e}")
+        
+        for script in response.xpath('//script[@type="application/ld+json"]/text()').getall():
             try:
                 data = json.loads(script)
                 if data.get('@type') == 'Product' or data.get('@type') == 'ProductGroup':
                     return data.get('sku', '')
             except:
                 continue
+        
         return ''
     
     def extract_mpn(self, response):
-        for script in response.xpath(self.json_ld_xpath).getall():
+        json_script = response.xpath('//script[@data-hypernova-key="App"]/text()').get()
+        if json_script:
+            try:
+                json_script = json_script.strip()
+                if json_script.startswith('<!--'):
+                    json_script = json_script[4:]
+                if json_script.endswith('-->'):
+                    json_script = json_script[:-3]
+                json_script = json_script.strip()
+                
+                data = json.loads(json_script)
+                content = data.get('data', {}).get('content', {})
+                product_layouts = content.get('productLayouts', {})
+                simple_items = product_layouts.get('simpleItems', [])
+                
+                current_url = response.url.rstrip('/')
+                
+                for item in simple_items:
+                    if isinstance(item, dict):
+                        item_url = item.get('url', '').rstrip('/')
+                        if item_url and item_url == current_url:
+                            sku = item.get('sku', '')
+                            if sku:
+                                return sku
+            except Exception as e:
+                self.logger.debug(f"Error extracting SKU from simpleItems: {e}")
+
+        for script in response.xpath('//script[@type="application/ld+json"]/text()').getall():
             try:
                 data = json.loads(script)
                 if data.get('@type') == 'Product' or data.get('@type') == 'ProductGroup':
@@ -604,7 +380,7 @@ class ProductFetcher(Spider):
         return ''
     
     def extract_brand(self, response):
-        for script in response.xpath(self.json_ld_xpath).getall():
+        for script in response.xpath('//script[@type="application/ld+json"]/text()').getall():
             try:
                 data = json.loads(script)
                 if data.get('@type') == 'Product' or data.get('@type') == 'ProductGroup':
@@ -618,7 +394,7 @@ class ProductFetcher(Spider):
         return ''
     
     def extract_main_image(self, response):
-        for script in response.xpath(self.json_ld_xpath).getall():
+        for script in response.xpath('//script[@type="application/ld+json"]/text()').getall():
             try:
                 data = json.loads(script)
                 if data.get('@type') == 'Product' or data.get('@type') == 'ProductGroup':
@@ -628,7 +404,7 @@ class ProductFetcher(Spider):
         return ''
     
     def extract_category(self, response):
-        for script in response.xpath(self.json_ld_xpath).getall():
+        for script in response.xpath('//script[@type="application/ld+json"]/text()').getall():
             try:
                 data = json.loads(script)
                 if data.get('@type') == 'BreadcrumbList':
@@ -647,7 +423,7 @@ class ProductFetcher(Spider):
         return ''
 
     def extract_category_url(self, response):
-        for script in response.xpath(self.json_ld_xpath).getall():
+        for script in response.xpath('//script[@type="application/ld+json"]/text()').getall():
             try:
                 data = json.loads(script)
                 if data.get('@type') == 'BreadcrumbList':
@@ -667,7 +443,7 @@ class ProductFetcher(Spider):
         return ''
 
     def extract_status(self, response):
-        for script in response.xpath(self.json_ld_xpath).getall():
+        for script in response.xpath('//script[@type="application/ld+json"]/text()').getall():
             try:
                 data = json.loads(script)
                 if data.get('@type') == 'Product' or data.get('@type') == 'ProductGroup':
@@ -685,16 +461,43 @@ class ProductFetcher(Spider):
         return ''
     
     def extract_product_id(self, response):
+        json_script = response.xpath('//script[@data-hypernova-key="App"]/text()').get()
+        if json_script:
+            try:
+                json_script = json_script.strip()
+                if json_script.startswith('<!--'):
+                    json_script = json_script[4:]
+                if json_script.endswith('-->'):
+                    json_script = json_script[:-3]
+                json_script = json_script.strip()
+                
+                data = json.loads(json_script)
+                content = data.get('data', {}).get('content', {})
+                product_layouts = content.get('productLayouts', {})
+                simple_items = product_layouts.get('simpleItems', [])
+                
+                current_url = response.url.rstrip('/')
+                
+                for item in simple_items:
+                    if isinstance(item, dict):
+                        item_url = item.get('url', '').rstrip('/')
+                        if item_url and item_url == current_url:
+                            productId = item.get('productId', '')
+                            if productId:
+                                return productId
+            except Exception as e:
+                self.logger.debug(f"Error extracting productId from simpleItems: {e}")
+
         product_id = response.xpath('//div[@data-id]/@data-id').get()        
         if product_id:
-            return product_id.strip()
+            return product_id
         return ''
     
     def extract_variant_id(self, response):
         return ''
     
     def extract_group_attr1(self, response, attr_num):
-        for script in response.xpath(self.json_ld_xpath).getall():
+        for script in response.xpath('//script[@type="application/ld+json"]/text()').getall():
             try:
                 data = json.loads(script)
                 if data.get('@type') == 'Product' or data.get('@type') == 'ProductGroup':
@@ -721,7 +524,7 @@ class ProductFetcher(Spider):
 
     def extract_highlights(self, response):
         highlights = []
-        highlight_items = response.xpath('//div[contains(@class, "product-hightlights-items-item")]')
+        highlight_items = response.xpath('//div[contains(@class, "product-hightlights-items-item")]')       
         for item in highlight_items:
             title = item.xpath('.//span[contains(@class, "product-hightlights-items-item-title")]/text()').get()
             desc = item.xpath('.//p[contains(@class, "product-hightlights-items-item-desc")]/text()').get()
@@ -730,7 +533,8 @@ class ProductFetcher(Spider):
                     'title': title.strip() if title else '',
                     'desc': desc.strip() if desc else ''
                 })
-        return json.dumps(highlights, indent=2) if highlights else ''
+        json_output = json.dumps(highlights, indent=2)
+        return json_output
     
     def extract_main_images(self, response):
         image_urls = []
@@ -755,6 +559,7 @@ class ProductFetcher(Spider):
                                 image_urls.append(original_url)
             except Exception as e:
                 self.logger.error(f"Failed to extract images: {e}")
+                raise
         return '\n'.join(image_urls) if image_urls else ''
 
     def extract_dimensions(self, response):
@@ -856,7 +661,7 @@ class ProductFetcher(Spider):
                             "data": dimension_data if dimension_data else []
                         }
 
-            simpleItems = content.get('productLayouts', {}).get('simpleItems', {})
+            simpleItems = content.get('productLayouts', {}).get('simpleItems', [])
             if isinstance(simpleItems, list):
                 for item in simpleItems:
                     if not isinstance(item, dict):
@@ -943,32 +748,7 @@ class ProductFetcher(Spider):
             return cleaned
     
     def handle_sitemap_error(self, failure):
-        """Handle sitemap request failures"""
-        url = failure.request.url
-        chunk_id = failure.request.meta.get('chunk_id', 0)
-        self.logger.error(f"Chunk {chunk_id}: Sitemap request failed for {url}: {failure.value}")
+        self.logger.error(f"Sitemap request failed: {failure.value}")
     
     def handle_product_error(self, failure):
-        """Handle request failures with retry logic"""
-        url = failure.request.meta.get('url', 'Unknown')
-        retry_count = failure.request.meta.get('retry_count', 0)
-        chunk_id = failure.request.meta.get('chunk_id', 0)
-        
-        # Check if it's a 405 or 429 error
-        if hasattr(failure.value, 'response') and failure.value.response:
-            status = failure.value.response.status
-            self.logger.error(f"Chunk {chunk_id}: Product page failed for {url} - Status: {status}, Retry: {retry_count}")
-            
-            # Retry up to 1 times for specific errors
-            if status in [405, 429, 500, 502, 503, 504] and retry_count < 1:
-                self.logger.info(f"Chunk {chunk_id}: Retrying {url} (attempt {retry_count + 1}/3)")
-                
-                headers = self.get_headers(referer='https://colemanfurniture.com/ashley-furniture.html')
-                
-                retry_request = failure.request.copy()
-                retry_request.meta['retry_count'] = retry_count + 1
-                retry_request.headers.update(headers)
-                retry_request.dont_filter = True
-                return retry_request
-        else:
-            self.logger.error(f"Chunk {chunk_id}: Product page request failed for {url}: {failure.value}")
+        self.logger.error(f"Product page request failed: {failure.value}")

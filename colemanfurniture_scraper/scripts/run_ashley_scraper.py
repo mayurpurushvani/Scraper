@@ -217,7 +217,7 @@ def run_scraper_chunk(chunk_id, total_chunks, chunk_urls, output_dir, job_id, ma
     settings.set('RANDOMIZE_DOWNLOAD_DELAY', True)
     settings.set('DOWNLOAD_TIMEOUT', 30)
     settings.set('RETRY_ENABLED', True)
-    settings.set('RETRY_TIMES', 3)
+    settings.set('RETRY_TIMES', 1)
     settings.set('RETRY_HTTP_CODES', [405, 429, 500, 502, 503, 504, 400, 403, 404, 408])
     settings.set('COOKIES_ENABLED', True)
     settings.set('ROBOTSTXT_OBEY', False)
@@ -307,7 +307,7 @@ def main():
     
     # MODE 1: Collect URLs only
     if args.urls_file is None:
-        logger.info("="*60)
+        logger.info("="*60) 
         logger.info(f"MODE: Collect Ashley URLs - Chunk {args.chunk}")
         logger.info(f"Pages: {args.start_page} - {args.end_page}")
         logger.info("="*60)
@@ -414,7 +414,7 @@ def main():
             settings.set('RANDOMIZE_DOWNLOAD_DELAY', True)
             settings.set('DOWNLOAD_TIMEOUT', 30)
             settings.set('RETRY_ENABLED', True)
-            settings.set('RETRY_TIMES', 3)
+            settings.set('RETRY_TIMES', 1)
             settings.set('COOKIES_ENABLED', True)
             settings.set('ROBOTSTXT_OBEY', False)
             settings.set('FEED_EXPORT_FIELDS', [
