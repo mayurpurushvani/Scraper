@@ -3,17 +3,20 @@ import sys
 import argparse
 import logging
 from pathlib import Path
+
+# Disable all logging
+logging.basicConfig(level=logging.CRITICAL)
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.CRITICAL)
+
+# Suppress all scrapy logging
+for logger_name in ['scrapy', 'scrapy.core.engine', 'scrapy.core.scraper', 
+                    'scrapy.downloadermiddlewares', 'scrapy.spidermiddlewares']:
+    logging.getLogger(logger_name).setLevel(logging.CRITICAL)
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from scrapy.crawler import CrawlerProcess
 from scrapy.utils.project import get_project_settings
 from fetcher.product_fetcher import ProductFetcher
-
-# logging.basicConfig(
-#     level=logging.INFO,
-#     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-# )
-logging.basicConfig(level=logging.WARNING)
-logger = logging.getLogger(__name__)
 
 def main():
     parser = argparse.ArgumentParser(description='Run Coleman and Homegallerystores product scraper')
@@ -53,6 +56,9 @@ def main():
     
     download_delay = float(os.getenv('DOWNLOAD_DELAY', '0.1'))
     settings.set('DOWNLOAD_DELAY', download_delay)
+    settings.set('LOG_LEVEL', 'CRITICAL')
+    settings.set('LOG_ENABLED', False)
+    settings.set('LOG_FILE', None)
     settings.set('FEED_EXPORT_FIELDS', [
         'Ref Product URL',
         'Ref Product ID', 

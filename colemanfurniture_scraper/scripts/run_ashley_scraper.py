@@ -1,9 +1,25 @@
-# scripts/run_ashley_scraper.py
 import os
 import sys
 import json
 import argparse
 import logging
+
+logger = logging.getLogger("app")
+logger.setLevel(logging.INFO)
+handler = logging.StreamHandler()
+formatter = logging.Formatter(
+    "%(asctime)s | %(levelname)s | %(message)s"
+)
+handler.setFormatter(formatter)
+logger.addHandler(handler)
+logging.getLogger("scrapy").setLevel(logging.CRITICAL)
+logging.getLogger("twisted").setLevel(logging.CRITICAL)
+
+logging.getLogger("twisted").propagate = False
+logging.getLogger("scrapy.core.engine").setLevel(logging.CRITICAL)
+logging.getLogger("scrapy.dupefilter").setLevel(logging.CRITICAL)
+logging.getLogger("scrapy.downloadermiddlewares").setLevel(logging.CRITICAL)
+
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 from datetime import datetime
@@ -18,9 +34,6 @@ from scrapy.crawler import CrawlerProcess
 from scrapy.utils.project import get_project_settings
 from fetcher.product_fetcher import ProductFetcher  # Import base ProductFetcher
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
 class AshleyURLSpider(scrapy.Spider):
     """Fast parallel URL fetcher from manufacturer API"""
     name = "ashley_url_fetcher"
@@ -31,7 +44,7 @@ class AshleyURLSpider(scrapy.Spider):
         self.base_api = f"https://colemanfurniture.com/manufacturer/detail/{self.manufacturer_id}"
         self.ashley_urls = set()
         self.start_page = int(kwargs.get('start_page', 1))
-        self.end_page = int(kwargs.get('end_page', 1000))
+        self.end_page = int(kwargs.get('end_page', 150))
         self.url_list = kwargs.get('url_list')
         self.concurrent_pages = int(kwargs.get('concurrent_pages', 20))
         
@@ -199,16 +212,9 @@ def validate_urls_file(file_path):
 def run_scraper_chunk(chunk_id, total_chunks, chunk_urls, output_dir, job_id, manufacturer_id, 
                      product_concurrency, sitemap_offset, max_sitemaps, max_urls_per_sitemap):
     """Run a single chunk of URLs in a separate process"""
-    
-    # Create chunk-specific output file
     chunk_output = f'{output_dir}/output_ashley_{manufacturer_id}_{job_id}_chunk_{chunk_id}.csv'
-    
     logger.info(f"🚀 Chunk {chunk_id + 1}/{total_chunks}: Starting with {len(chunk_urls)} URLs -> {chunk_output}")
-    
-    # Get project settings
     settings = get_project_settings()
-    
-    # Configure settings for HIGH SPEED with retry handling
     settings.set('FEED_URI', chunk_output)
     settings.set('FEED_FORMAT', 'csv')
     settings.set('CONCURRENT_REQUESTS', product_concurrency)
@@ -221,7 +227,8 @@ def run_scraper_chunk(chunk_id, total_chunks, chunk_urls, output_dir, job_id, ma
     settings.set('RETRY_HTTP_CODES', [405, 429, 500, 502, 503, 504, 400, 403, 404, 408])
     settings.set('COOKIES_ENABLED', True)
     settings.set('ROBOTSTXT_OBEY', False)
-    settings.set('LOG_LEVEL', 'ERROR')
+    settings.set('LOG_LEVEL', 'INFO')
+    settings.set('LOG_STDOUT', True)
     settings.set('FEED_EXPORT_FIELDS', [
         'Ref Product URL',
         'Ref Product ID', 
