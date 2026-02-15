@@ -478,7 +478,7 @@ jobs:
           path: processed_urls_*_master.json
           retention-days: 7
 
-  # JOB 7: Merge all product chunks and upload to FTP
+  # JOB 7: Merge all product chunks, remove duplicates, and upload to FTP
   merge_and_upload:
     needs: [scrape_products, merge_urls, merge_tracking]
     if: ${{ always() && !cancelled() }}
@@ -489,19 +489,20 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: product_chunks
+          merge-multiple: true
           
       - name: Download master tracking file
         uses: actions/download-artifact@v4
         with:
-          name: tracking-master
+          name: tracking-master-${{ github.event.inputs.manufacturer_id }}
           path: tracking/
           
-      - name: Merge product CSVs
+      - name: Merge and deduplicate product CSVs
         run: |
-          echo "=== Merging Product CSV Files ==="
+          echo "=== Merging and Deduplicating Product CSV Files ==="
           
           # Find all product CSV files
-          CSV_FILES=$(find product_chunks -name "ashley_products_chunk_*.csv" -type f)
+          CSV_FILES=$(find product_chunks -name "ashley_products_chunk_*.csv" -type f || true)
           
           if [ -z "$CSV_FILES" ]; then
             echo "No product CSV files found to merge"
@@ -511,34 +512,87 @@ jobs:
           else
             echo "Found $(echo "$CSV_FILES" | wc -l) CSV files"
             
-            # Get first file for headers
+            # Get headers from first file
             FIRST_FILE=$(echo "$CSV_FILES" | head -n 1)
             echo "Using headers from: $FIRST_FILE"
             
-            # Extract headers (first line)
-            head -n 1 "$FIRST_FILE" > ashley_products_full.csv
+            # Extract headers
+            HEADERS=$(head -n 1 "$FIRST_FILE")
             
-            # Merge all files (skip headers)
-            TOTAL_ROWS=0
+            # Create a directory for processing
+            mkdir -p merge_temp
+            
+            # Copy all CSV files to processing directory, skipping headers
+            TOTAL_ROWS_BEFORE=0
             for f in $CSV_FILES; do
-              echo "Merging: $f"
-              # Count rows in this file (excluding header)
               if [ -s "$f" ] && [ "$(wc -l < "$f")" -gt 1 ]; then
+                # Count rows in this file (excluding header)
                 FILE_ROWS=$(tail -n +2 "$f" | sed '/^$/d' | wc -l)
-                TOTAL_ROWS=$((TOTAL_ROWS + FILE_ROWS))
-                # Append data
-                tail -n +2 "$f" | sed '/^$/d' >> ashley_products_full.csv
+                TOTAL_ROWS_BEFORE=$((TOTAL_ROWS_BEFORE + FILE_ROWS))
+                
+                # Append data (skip header)
+                tail -n +2 "$f" | sed '/^$/d' >> merge_temp/all_data.csv
+                echo "  + Added $FILE_ROWS rows from $(basename "$f")"
               fi
             done
             
-            echo "Merged $TOTAL_ROWS total product rows"
+            echo "Total rows before deduplication: $TOTAL_ROWS_BEFORE"
+            
+            # Check if we have any data
+            if [ ! -f "merge_temp/all_data.csv" ] || [ ! -s "merge_temp/all_data.csv" ]; then
+              echo "No data rows found"
+              echo "$HEADERS" > ashley_products_full.csv
+            else
+              # Count total lines in merged file
+              TOTAL_LINES=$(wc -l < merge_temp/all_data.csv)
+              echo "Merged file has $TOTAL_LINES rows"
+              
+              # Deduplicate based on Ref Product URL (first column)
+              echo "Deduplicating by Ref Product URL..."
+              
+              # Method 1: Using awk to keep first occurrence of each URL
+              awk -F ',' '!seen[$1]++' merge_temp/all_data.csv > merge_temp/deduplicated.csv
+              
+              # Alternative Method 2: Using sort -u (if you prefer)
+              # sort -t ',' -k1,1 -u merge_temp/all_data.csv > merge_temp/deduplicated.csv
+              
+              # Count after deduplication
+              UNIQUE_ROWS=$(wc -l < merge_temp/deduplicated.csv)
+              DUPLICATES_REMOVED=$((TOTAL_LINES - UNIQUE_ROWS))
+              
+              echo "✅ After deduplication: $UNIQUE_ROWS unique rows (removed $DUPLICATES_REMOVED duplicates)"
+              
+              # Create final CSV with headers
+              echo "$HEADERS" > ashley_products_full.csv
+              cat merge_temp/deduplicated.csv >> ashley_products_full.csv
+              
+              # Show duplicate statistics by URL patterns
+              echo ""
+              echo "📊 Duplicate Statistics:"
+              echo "  - Total rows before: $TOTAL_LINES"
+              echo "  - Unique rows after: $UNIQUE_ROWS"
+              echo "  - Duplicates removed: $DUPLICATES_REMOVED"
+              echo "  - Duplicate rate: $(echo "scale=2; $DUPLICATES_REMOVED * 100 / $TOTAL_LINES" | bc)%"
+              
+              # Show sample of most duplicated URLs
+              echo ""
+              echo "🔍 Most duplicated URLs:"
+              awk -F ',' '{count[$1]++} END {for (url in count) if (count[url] > 1) print count[url], url}' merge_temp/all_data.csv | sort -nr | head -10 | while read count url; do
+                echo "  - $count times: $url"
+              done
+            fi
+            
+            # Clean up temp directory
+            rm -rf merge_temp
           fi
           
-          # Show tracking stats
+          # Show master tracking stats
           if [ -f "tracking/processed_urls_*_master.json" ]; then
             MASTER_FILE=$(ls tracking/processed_urls_*_master.json | head -n 1)
             TOTAL_UNIQUE=$(jq '.total' "$MASTER_FILE")
-            echo "📊 Total unique URLs processed across all chunks: $TOTAL_UNIQUE"
+            echo ""
+            echo "📋 Tracking Master File Stats:"
+            echo "  - Total unique URLs tracked: $TOTAL_UNIQUE"
           fi
           
       - name: Build output filename
@@ -555,7 +609,7 @@ jobs:
           echo "timestamped_name=$TIMESTAMPED_FILENAME" >> $GITHUB_OUTPUT
           echo "Generated filename: $FILENAME"
           
-      - name: Upload final CSV artifact
+      - name: Upload final deduplicated CSV artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.meta.outputs.timestamped_name }}
@@ -573,9 +627,6 @@ jobs:
           TIMESTAMPED_FILE: ${{ steps.meta.outputs.timestamped_name }}
         run: |
           echo "=== Uploading to FTP ==="
-          echo "FTP Host: $FTP_HOST"
-          echo "File: $FILE"
-          echo "Timestamped File: $TIMESTAMPED_FILE"
           
           # Install lftp
           sudo apt-get update && sudo apt-get install -y lftp
@@ -610,20 +661,20 @@ jobs:
           
           echo "✅ Files uploaded successfully"
           
-      - name: Send notification
+      - name: Send notification with duplicate stats
         if: always()
         run: |
           if [ "${{ job.status }}" = "success" ]; then
             PRODUCT_COUNT=$(tail -n +2 ashley_products_full.csv 2>/dev/null | wc -l || echo "0")
             echo "✅ Ashley scraper completed successfully!"
-            echo "Total products scraped: $PRODUCT_COUNT"
+            echo "Total products after deduplication: $PRODUCT_COUNT"
             echo "Parallel chunks: ${{ github.event.inputs.product_chunks }}"
             
             # Show tracking stats
             if [ -f "tracking/processed_urls_*_master.json" ]; then
               MASTER_FILE=$(ls tracking/processed_urls_*_master.json | head -n 1)
               TOTAL_UNIQUE=$(jq '.total' "$MASTER_FILE")
-              echo "Unique URLs processed: $TOTAL_UNIQUE"
+              echo "Unique URLs tracked: $TOTAL_UNIQUE"
             fi
           else
             echo "❌ Ashley scraper failed with status: ${{ job.status }}"
@@ -632,6 +683,6 @@ jobs:
       - name: Cleanup
         if: always()
         run: |
-          rm -rf product_chunks url_chunks output tracking all-tracking
+          rm -rf product_chunks url_chunks output tracking all-tracking merge_temp
           rm -f ashley_products_full.csv ftp_commands.txt processed_urls_*.json
           echo "Cleanup completed"
