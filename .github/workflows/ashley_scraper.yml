@@ -175,6 +175,13 @@ jobs:
       urls_file: ${{ steps.save_merged.outputs.urls_file }}
       
     steps:
+      - uses: actions/checkout@v4  # This puts you in $GITHUB_WORKSPACE automatically
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          
       - name: Download all URL artifacts
         uses: actions/download-artifact@v4
         with:
@@ -199,21 +206,18 @@ jobs:
           mkdir -p output
           OUTPUT_FILE="output/ashley_urls_complete_${TIMESTAMP}.json"
           
-          # Call the Python deduplicate function
-          echo "Running Python deduplication..."
-          OUTPUT=$(python colemanfurniture_scraper/scripts/run_ashley_scraper.py \
+          # Run Python deduplication
+          python colemanfurniture_scraper/scripts/run_ashley_scraper.py \
             --deduplicate $JSON_FILES \
-            --output "$OUTPUT_FILE")
+            --output "$OUTPUT_FILE"
           
-          # Extract the output file path from Python script output
-          OUTPUT_FILE=$(echo "$OUTPUT" | grep "OUTPUT_FILE=" | cut -d'=' -f2)
-          
-          if [ -z "$OUTPUT_FILE" ]; then
-            echo "Error: Failed to get output file from Python script"
+          # Check if output file was created
+          if [ -f "$OUTPUT_FILE" ]; then
+            echo "OUTPUT_FILE=$OUTPUT_FILE" >> $GITHUB_ENV
+          else
+            echo "Error: Output file not created"
             exit 1
           fi
-          
-          echo "OUTPUT_FILE=$OUTPUT_FILE" >> $GITHUB_ENV
           
       - name: Save merged URLs file info
         id: save_merged
