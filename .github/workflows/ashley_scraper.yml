@@ -426,9 +426,9 @@ jobs:
         with:
           path: product_chunks
           
-      - name: Merge product CSVs
+      - name: Merge product CSVs (UNIQUE ONLY)
         run: |
-          echo "=== Merging Product CSV Files ==="
+          echo "=== Merging & Deduplicating Product CSVs ==="
           
           # Find all product CSV files
           CSV_FILES=$(find product_chunks -name "ashley_products_chunk_*.csv" -type f)
@@ -441,28 +441,52 @@ jobs:
           else
             echo "Found $(echo "$CSV_FILES" | wc -l) CSV files"
             
-            # Get first file for headers
+            # Step 1: Extract headers from first file
             FIRST_FILE=$(echo "$CSV_FILES" | head -n 1)
-            echo "Using headers from: $FIRST_FILE"
+            echo "Using headers from: $(basename $FIRST_FILE)"
+            head -n 1 "$FIRST_FILE" > temp_headers.txt
             
-            # Extract headers (first line)
-            head -n 1 "$FIRST_FILE" > ashley_products_full.csv
+            # Step 2: Extract ALL data rows (skip headers, remove empty lines)
+            TEMP_DATA="all_products_temp.txt"
+            rm -f "$TEMP_DATA"
             
-            # Merge all files (skip headers)
-            TOTAL_ROWS=0
+            RAW_TOTAL=0
             for f in $CSV_FILES; do
-              echo "Merging: $f"
-              # Count rows in this file (excluding header)
-              if [ -s "$f" ] && [ "$(wc -l < "$f")" -gt 1 ]; then
-                FILE_ROWS=$(tail -n +2 "$f" | sed '/^$/d' | wc -l)
-                TOTAL_ROWS=$((TOTAL_ROWS + FILE_ROWS))
-                # Append data
-                tail -n +2 "$f" | sed '/^$/d' >> ashley_products_full.csv
-              fi
+              echo "  Processing: $(basename $f)"
+              FILE_ROWS=$(tail -n +2 "$f" | sed '/^$/d' | wc -l)
+              RAW_TOTAL=$((RAW_TOTAL + FILE_ROWS))
+              echo "    $FILE_ROWS data rows from this chunk"
+              
+              # Extract data rows only
+              tail -n +2 "$f" | sed '/^$/d' >> "$TEMP_DATA"
             done
             
-            echo "Merged $TOTAL_ROWS total product rows"
+            echo "Total RAW product rows (before dedup): $RAW_TOTAL"
+            
+            # Step 3: Remove duplicate rows + sort (UNIQUE ONLY)
+            sort -u "$TEMP_DATA" > "unique_products.txt"
+            UNIQUE_COUNT=$(wc -l < "unique_products.txt")
+            DUPLICATES=$((RAW_TOTAL - UNIQUE_COUNT))
+            
+            DUP_PERCENT=$((DUPLICATES * 100 / RAW_TOTAL))
+            echo "✅ UNIQUE products: $UNIQUE_COUNT"
+            echo "❌ Duplicates removed: $DUPLICATES ($DUP_PERCENT%)"
+            
+            # Step 4: Combine header + unique data
+            cat temp_headers.txt "unique_products.txt" > ashley_products_full.csv
+            
+            # Step 5: Final verification
+            FINAL_COUNT=$(tail -n +2 ashley_products_full.csv | wc -l)
+            echo "📁 Saved $FINAL_COUNT unique products → ashley_products_full.csv"
+            
+            # Show sample
+            echo "Sample unique products:"
+            head -2 ashley_products_full.csv
+            
+            # Cleanup
+            rm -f "$TEMP_DATA" "unique_products.txt" temp_headers.txt
           fi
+
           
       - name: Build output filename
         id: meta
