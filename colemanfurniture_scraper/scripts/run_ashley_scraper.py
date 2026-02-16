@@ -32,7 +32,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import scrapy
 from scrapy.crawler import CrawlerProcess
 from scrapy.utils.project import get_project_settings
-from fetcher.product_fetcher import ProductFetcher  # Import base ProductFetcher
+from fetcher.product_fetcher import ProductFetcher
 
 class AshleyURLSpider(scrapy.Spider):
     """Fast parallel URL fetcher from manufacturer API"""
@@ -87,13 +87,13 @@ class AshleyURLSpider(scrapy.Spider):
                 products = [products]
             
             page_urls = []
+            seen_on_page = set()
+            
             for product in products:
                 url = product.get('url')
                 if url and isinstance(url, str) and url.strip():
-                    # Clean the URL - remove any quotes
                     url = url.strip().strip('"').strip("'")
                     
-                    # Fix relative URLs
                     if not url.startswith(('http://', 'https://')):
                         if url.startswith('/'):
                             full_url = urljoin('https://colemanfurniture.com', url)
@@ -102,40 +102,73 @@ class AshleyURLSpider(scrapy.Spider):
                     else:
                         full_url = url
                     
-                    # Validate the URL
                     parsed = urlparse(full_url)
+                    normalized_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path.rstrip('/')}"
+                    
                     if parsed.scheme and parsed.netloc:
-                        page_urls.append(full_url)
+                        if normalized_url not in seen_on_page:
+                            seen_on_page.add(normalized_url)
+                            page_urls.append(normalized_url)
+                        else:
+                            logger.debug(f"Duplicate main URL on same page {page}: {normalized_url}")
                     else:
-                        logger.warning(f"Invalid URL on page {page}: {url}")
+                        logger.warning(f"Invalid main URL on page {page}: {url}")
+                
+                associated_bundles = product.get('associatedBundles', [])
+                if isinstance(associated_bundles, list):
+                    for bundle in associated_bundles:
+                        if isinstance(bundle, dict):
+                            bundle_url = bundle.get('url')
+                            if bundle_url and isinstance(bundle_url, str) and bundle_url.strip():
+                                bundle_url = bundle_url.strip().strip('"').strip("'")
+                                
+                                if not bundle_url.startswith(('http://', 'https://')):
+                                    if bundle_url.startswith('/'):
+                                        full_bundle_url = urljoin('https://colemanfurniture.com', bundle_url)
+                                    else:
+                                        full_bundle_url = urljoin('https://colemanfurniture.com/', bundle_url)
+                                else:
+                                    full_bundle_url = bundle_url
+                                
+                                parsed = urlparse(full_bundle_url)
+                                normalized_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path.rstrip('/')}"
+                                
+                                if parsed.scheme and parsed.netloc:
+                                    if normalized_url not in seen_on_page:
+                                        seen_on_page.add(normalized_url)
+                                        page_urls.append(normalized_url)
+                                        logger.debug(f"Found associated bundle URL: {normalized_url}")
+                                    else:
+                                        logger.debug(f"Duplicate bundle URL on same page {page}: {normalized_url}")
+                                else:
+                                    logger.warning(f"Invalid bundle URL on page {page}: {bundle_url}")
             
-            if page_urls:
-                for url in page_urls:
+            new_urls_count = 0
+            for url in page_urls:
+                if url not in self.ashley_urls:
                     self.ashley_urls.add(url)
                     if self.url_list is not None:
                         self.url_list.append(url)
-                
-                logger.info(f"Page {page}: Found {len(page_urls)} valid products (Total: {len(self.ashley_urls)})")
-                
+                    new_urls_count += 1
+            
+            logger.info(f"Page {page}: Found {len(page_urls)} valid products ({new_urls_count} new, {len(page_urls) - new_urls_count} already seen in previous pages)")
+            
         except Exception as e:
             logger.error(f"Error on page {page}: {e}")
     
     def closed(self, reason):
-        logger.info(f"✅ Collected {len(self.ashley_urls)} Ashley product URLs from pages {self.start_page}-{self.end_page}")
+        logger.info(f"Collected {len(self.ashley_urls)} Ashley product URLs from pages {self.start_page}-{self.end_page}")
 
 def clean_url_string(url):
     """Clean individual URL string"""
     if not url or not isinstance(url, str):
         return None
     
-    # Remove whitespace and quotes
     url = url.strip().strip('"').strip("'")
     
-    # Skip empty URLs
     if not url:
         return None
     
-    # Ensure URL has scheme
     if not url.startswith(('http://', 'https://')):
         if url.startswith('/'):
             url = f"https://colemanfurniture.com{url}"
@@ -150,14 +183,12 @@ def validate_urls_file(file_path):
         with open(file_path, 'r') as f:
             content = f.read()
         
-        # Try to parse JSON
         try:
             data = json.loads(content)
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON in file {file_path}: {e}")
             return []
         
-        # Extract URLs based on structure
         if isinstance(data, dict) and 'urls' in data:
             urls = data['urls']
             is_dict_format = True
@@ -169,12 +200,10 @@ def validate_urls_file(file_path):
             logger.error(f"Unexpected JSON structure in {file_path}")
             return []
         
-        # Clean and validate URLs
         valid_urls = []
         for url in urls:
             cleaned_url = clean_url_string(url)
             if cleaned_url:
-                # Additional validation - check if it's a proper URL
                 parsed = urlparse(cleaned_url)
                 if parsed.scheme and parsed.netloc and '.' in parsed.netloc:
                     valid_urls.append(cleaned_url)
@@ -183,7 +212,6 @@ def validate_urls_file(file_path):
             else:
                 logger.warning(f"Failed to clean URL: '{url}'")
         
-        # Update the data with cleaned URLs
         if is_dict_format:
             data['urls'] = valid_urls
             data['total_urls'] = len(valid_urls)
@@ -191,13 +219,11 @@ def validate_urls_file(file_path):
             data['urls'] = valid_urls
             data['total_urls'] = len(valid_urls)
         
-        # Write back cleaned URLs
         with open(file_path, 'w') as f:
             json.dump(data, f, indent=2)
         
-        logger.info(f"✅ Validated URLs file: {len(valid_urls)} valid URLs (removed {len(urls) - len(valid_urls)} invalid)")
+        logger.info(f"Validated URLs file: {len(valid_urls)} valid URLs (removed {len(urls) - len(valid_urls)} invalid)")
         
-        # Show sample of cleaned URLs
         if valid_urls:
             logger.info(f"Sample cleaned URL: {valid_urls[0]}")
         
@@ -211,9 +237,8 @@ def validate_urls_file(file_path):
 
 def run_scraper_chunk(chunk_id, total_chunks, chunk_urls, output_dir, job_id, manufacturer_id, 
                      product_concurrency, sitemap_offset, max_sitemaps, max_urls_per_sitemap):
-    """Run a single chunk of URLs in a separate process"""
     chunk_output = f'{output_dir}/output_ashley_{manufacturer_id}_{job_id}_chunk_{chunk_id}.csv'
-    logger.info(f"🚀 Chunk {chunk_id + 1}/{total_chunks}: Starting with {len(chunk_urls)} URLs -> {chunk_output}")
+    logger.info(f"Chunk {chunk_id + 1}/{total_chunks}: Starting with {len(chunk_urls)} URLs -> {chunk_output}")
     settings = get_project_settings()
     settings.set('FEED_URI', chunk_output)
     settings.set('FEED_FORMAT', 'csv')
@@ -253,7 +278,6 @@ def run_scraper_chunk(chunk_id, total_chunks, chunk_urls, output_dir, job_id, ma
     ])
     settings.set('DUPEFILTER_CLASS', 'scrapy.dupefilters.RFPDupeFilter')
     
-    # Run the base ProductFetcher with Ashley flags AND CHUNK MODE
     process = CrawlerProcess(settings)
     process.crawl(ProductFetcher,
                  website_url="https://colemanfurniture.com",
@@ -269,14 +293,13 @@ def run_scraper_chunk(chunk_id, total_chunks, chunk_urls, output_dir, job_id, ma
     
     try:
         process.start()
-        logger.info(f"✅ Chunk {chunk_id + 1}/{total_chunks}: Completed -> {chunk_output}")
+        logger.info(f"Chunk {chunk_id + 1}/{total_chunks}: Completed -> {chunk_output}")
         return chunk_output
     except Exception as e:
-        logger.error(f"❌ Chunk {chunk_id + 1}/{total_chunks}: Failed - {e}")
+        logger.error(f"Chunk {chunk_id + 1}/{total_chunks}: Failed - {e}")
         return None
 
 def split_into_chunks(url_list, chunk_size):
-    """Split URLs into chunks for parallel processing"""
     chunks = []
     for i in range(0, len(url_list), chunk_size):
         chunks.append(url_list[i:i + chunk_size])
@@ -285,22 +308,18 @@ def split_into_chunks(url_list, chunk_size):
 def main():
     parser = argparse.ArgumentParser(description='Ashley Furniture Scraper')
     
-    # URL collection parameters
     parser.add_argument('--manufacturer-id', default='250', help='Manufacturer ID for Ashley')
     parser.add_argument('--start-page', type=int, default=1, help='Start page number')
-    parser.add_argument('--end-page', type=int, default=1000, help='End page number')
+    parser.add_argument('--end-page', type=int, default=150, help='End page number')
     parser.add_argument('--chunk', type=int, default=0, help='Chunk ID for URL collection')
     parser.add_argument('--url-concurrency', type=int, default=20, help='Concurrent URL requests')
     
-    # Product scraping parameters
     parser.add_argument('--urls-file', help='JSON file containing Ashley URLs')
     parser.add_argument('--product-concurrency', type=int, default=12, help='Concurrent product requests per chunk')
     
-    # 🚨 NEW: Chunk processing parameters for parallel scraping
     parser.add_argument('--product-chunks', type=int, default=1, help='Number of parallel chunks for product scraping')
     parser.add_argument('--chunk-size', type=int, default=0, help='Number of URLs per chunk (0 = auto-calculate)')
     
-    # Common parameters
     parser.add_argument('--job-id', default='ashley', help='Job identifier')
     parser.add_argument('--output-dir', default='output', help='Output directory')
     parser.add_argument('--sitemap-offset', type=int, default=0, help='Sitemap offset (compatibility)')
@@ -309,17 +328,14 @@ def main():
     
     args = parser.parse_args()
     
-    # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
     
-    # MODE 1: Collect URLs only
     if args.urls_file is None:
         logger.info("="*60) 
         logger.info(f"MODE: Collect Ashley URLs - Chunk {args.chunk}")
         logger.info(f"Pages: {args.start_page} - {args.end_page}")
         logger.info("="*60)
         
-        # Collect URLs
         url_list = []
         
         settings = {
@@ -343,7 +359,6 @@ def main():
                      concurrent_pages=args.url_concurrency)
         process.start()
         
-        # Clean and validate collected URLs
         valid_urls = []
         for url in url_list:
             cleaned_url = clean_url_string(url)
@@ -352,7 +367,6 @@ def main():
                 if parsed.scheme and parsed.netloc and '.' in parsed.netloc:
                     valid_urls.append(cleaned_url)
         
-        # Save URLs to file
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         output_file = f'{args.output_dir}/ashley_urls_chunk_{args.chunk}_{args.job_id}_{timestamp}.json'
         
@@ -366,15 +380,13 @@ def main():
                 "urls": valid_urls
             }, f, indent=2)
         
-        logger.info(f"✅ Saved {len(valid_urls)} valid URLs to {output_file}")
+        logger.info(f"Saved {len(valid_urls)} valid URLs to {output_file}")
         
-        # Show sample of saved URLs
         if valid_urls:
             logger.info(f"Sample URL: {valid_urls[0]}")
         
         print(f"OUTPUT_FILE={output_file}")
     
-    # MODE 2: Scrape products from URLs file - WITH PARALLEL CHUNKS
     else:
         logger.info("="*60)
         logger.info(f"MODE: Scrape Ashley Products - PARALLEL CHUNKS")
@@ -384,12 +396,10 @@ def main():
         logger.info(f"Concurrency per chunk: {args.product_concurrency}")
         logger.info("="*60)
         
-        # Check if file exists
         if not os.path.exists(args.urls_file):
             logger.error(f"URLs file not found: {args.urls_file}")
             sys.exit(1)
         
-        # Validate and get all URLs
         all_ashley_urls = validate_urls_file(args.urls_file)
         
         if not all_ashley_urls:
@@ -397,22 +407,17 @@ def main():
             sys.exit(1)
         
         total_urls = len(all_ashley_urls)
-        logger.info(f"📊 Total URLs to scrape: {total_urls}")
+        logger.info(f"Total URLs to scrape: {total_urls}")
         
-        # Check if we should use chunking or single process
         if args.product_chunks <= 1:
-            # SINGLE PROCESS MODE (original behavior)
-            logger.info("🚀 Running in single process mode...")
+            logger.info("Running in single process mode...")
             
-            # Generate output filename
             timestamp = os.getenv('GITHUB_RUN_ID', 'local')
             domain = f"ashley_{args.manufacturer_id}"
             output_file = f'{args.output_dir}/output_{domain}_{args.job_id}_{timestamp}.csv'
             
-            # Get project settings
             settings = get_project_settings()
             
-            # Configure settings
             settings.set('FEED_URI', output_file)
             settings.set('FEED_FORMAT', 'csv')
             settings.set('CONCURRENT_REQUESTS', args.product_concurrency)
@@ -433,7 +438,6 @@ def main():
             ])
             settings.set('DUPEFILTER_CLASS', 'scrapy.dupefilters.RFPDupeFilter')
             
-            # Run single process
             process = CrawlerProcess(settings)
             process.crawl(ProductFetcher,
                          website_url="https://colemanfurniture.com",
@@ -446,33 +450,26 @@ def main():
                          job_id=args.job_id)
             process.start()
             
-            logger.info(f"✅ Scraped {len(all_ashley_urls)} Ashley products to {output_file}")
+            logger.info(f"Scraped {len(all_ashley_urls)} Ashley products to {output_file}")
             print(f"OUTPUT_FILE={output_file}")
             
         else:
-            # PARALLEL CHUNK MODE
-            # Determine chunk size
             if args.chunk_size > 0:
                 chunk_size = args.chunk_size
             else:
-                # Auto-calculate chunk size based on number of chunks
                 chunk_size = total_urls // args.product_chunks
                 if total_urls % args.product_chunks != 0:
                     chunk_size += 1
             
-            # Split URLs into chunks
             chunks = split_into_chunks(all_ashley_urls, chunk_size)
-            logger.info(f"📦 Split into {len(chunks)} chunks of ~{chunk_size} URLs each")
+            logger.info(f"Split into {len(chunks)} chunks of ~{chunk_size} URLs each")
             
-            # Limit chunks to requested number
             chunks = chunks[:args.product_chunks]
-            logger.info(f"🚀 Processing {len(chunks)} chunks in parallel")
+            logger.info(f"Processing {len(chunks)} chunks in parallel")
             
-            # Create timestamp for job
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             job_timestamp = f"{args.job_id}_{timestamp}"
             
-            # Start parallel processes
             processes = []
             chunk_outputs = []
             
@@ -486,35 +483,31 @@ def main():
                 ))
                 processes.append(p)
                 p.start()
-                logger.info(f"▶️ Started process for chunk {i + 1}/{len(chunks)} ({len(chunk_urls)} URLs)")
+                logger.info(f"Started process for chunk {i + 1}/{len(chunks)} ({len(chunk_urls)} URLs)")
                 
-                # Small stagger between process starts
                 time.sleep(0.5)
             
-            # Wait for all processes to complete
             for i, p in enumerate(processes):
                 p.join()
-                logger.info(f"🏁 Completed process for chunk {i + 1}/{len(chunks)}")
+                logger.info(f"Completed process for chunk {i + 1}/{len(chunks)}")
             
             end_time = time.time()
             elapsed = end_time - start_time
             
-            # Combine all chunk outputs into a single file
             combined_output = f'{args.output_dir}/output_ashley_{args.manufacturer_id}_{args.job_id}_{timestamp}_combined.csv'
             
             logger.info("="*60)
-            logger.info(f"📊 Merging chunk outputs...")
+            logger.info(f"Merging chunk outputs...")
             
             all_dfs = []
             total_products = 0
             
-            # Try to import pandas for merging, fallback to manual merge
             try:
                 import pandas as pd
                 has_pandas = True
             except ImportError:
                 has_pandas = False
-                logger.warning("⚠️ pandas not installed, skipping merge. Chunk files are available separately.")
+                logger.warning("pandas not installed, skipping merge. Chunk files are available separately.")
             
             if has_pandas:
                 for i in range(len(chunks)):
@@ -532,20 +525,20 @@ def main():
                 if all_dfs:
                     combined_df = pd.concat(all_dfs, ignore_index=True)
                     combined_df.to_csv(combined_output, index=False)
-                    logger.info(f"✅ Combined {total_products} products into {combined_output}")
+                    logger.info(f"Combined {total_products} products into {combined_output}")
                 else:
-                    logger.error("❌ No chunk outputs found!")
+                    logger.error("No chunk outputs found!")
                     combined_output = None
             else:
                 combined_output = None
-                logger.info("📁 Chunk files are available in the output directory:")
+                logger.info("Chunk files are available in the output directory:")
                 for i in range(len(chunks)):
                     chunk_file = f'{args.output_dir}/output_ashley_{args.manufacturer_id}_{job_timestamp}_chunk_{i}.csv'
                     if os.path.exists(chunk_file):
                         logger.info(f"  - {chunk_file}")
             
             logger.info("="*60)
-            logger.info(f"✅ SCRAPE COMPLETED")
+            logger.info(f"SCRAPE COMPLETED")
             logger.info(f"   Total URLs: {total_urls}")
             logger.info(f"   Parallel chunks: {len(chunks)}")
             logger.info(f"   Time elapsed: {elapsed:.2f} seconds ({elapsed/60:.2f} minutes)")
@@ -557,6 +550,5 @@ def main():
                 print(f"OUTPUT_FILE={combined_output}")
 
 if __name__ == '__main__':
-    # Required for multiprocessing on Windows
     multiprocessing.freeze_support()
     main()

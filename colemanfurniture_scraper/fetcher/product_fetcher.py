@@ -128,7 +128,7 @@ class ProductFetcher(Spider):
                     'count': len(self.new_urls)
                 }, f, indent=2)
             
-            self.logger.info(f"💾 Saved job file with {len(self.new_urls)} new URLs")
+            self.logger.info(f"Saved job file with {len(self.new_urls)} new URLs")
             self.save_counter = 0
             
         except Exception as e:
@@ -203,9 +203,9 @@ class ProductFetcher(Spider):
                 end_idx = start_idx + chunk_size if self.chunk_id < self.total_chunks - 1 else len(self.ashley_urls)
                 urls_to_process = self.ashley_urls[start_idx:end_idx]
                 
-                self.logger.info(f"🚀 Ashley Chunk {self.chunk_id + 1}/{self.total_chunks}: Processing {len(urls_to_process)} URLs (indices {start_idx}-{end_idx-1})")
+                self.logger.info(f"Ashley Chunk {self.chunk_id + 1}/{self.total_chunks}: Processing {len(urls_to_process)} URLs (indices {start_idx}-{end_idx-1})")
             else:
-                self.logger.info(f"🚀 Ashley mode: Processing {len(self.ashley_urls)} direct product URLs")
+                self.logger.info(f"Ashley mode: Processing {len(self.ashley_urls)} direct product URLs")
             
             # Create requests for each URL
             for i, url in enumerate(urls_to_process):
@@ -553,6 +553,35 @@ class ProductFetcher(Spider):
         return ''
     
     def extract_main_image(self, response):
+        json_script = response.xpath('//script[@data-hypernova-key="App"]/text()').get()
+        if json_script:
+            try:
+                json_script = json_script.strip()
+                if json_script.startswith('<!--'):
+                    json_script = json_script[4:]
+                if json_script.endswith('-->'):
+                    json_script = json_script[:-3]
+                json_script = json_script.strip()
+                
+                data = json.loads(json_script)
+                content = data.get('data', {}).get('content', {})
+                product_layouts = content.get('productLayouts', {})
+                simple_items = product_layouts.get('simpleItems', [])
+                
+                current_url = response.url.rstrip('/')
+                
+                for item in simple_items:
+                    if isinstance(item, dict):
+                        item_url = item.get('url', '').rstrip('/')
+                        if item_url and item_url == current_url:
+                            gallery = item.get('gallery', [])
+                            if isinstance(gallery, list) and gallery:
+                                for img in gallery:
+                                    if isinstance(img, dict):
+                                        original_url = img.get('original', '')
+                                        return original_url
+            except Exception as e:
+                self.logger.debug(f"Error extracting main image from simpleItems gallery: {e}")
         for script in response.xpath('//script[@type="application/ld+json"]/text()').getall():
             try:
                 data = json.loads(script)
@@ -699,26 +728,58 @@ class ProductFetcher(Spider):
         image_urls = []
         json_script = response.xpath('//script[@data-hypernova-key="App"]/text()').get()
         if json_script:
-            json_script = json_script.strip()
-            if json_script.startswith('<!--'):
-                json_script = json_script[4:]
-            if json_script.endswith('-->'):
-                json_script = json_script[:-3]
-            json_script = json_script.strip()
             try:
+                json_script = json_script.strip()
+                if json_script.startswith('<!--'):
+                    json_script = json_script[4:]
+                if json_script.endswith('-->'):
+                    json_script = json_script[:-3]
+                json_script = json_script.strip()
+                
                 data = json.loads(json_script)
-                main_data = data.get('data', {})
-                content = main_data.get('content', {})
-                gallery = content.get('gallery', [])
-                if isinstance(gallery, list):
-                    for img in gallery:
-                        if isinstance(img, dict):
-                            original_url = img.get('original')
-                            if original_url:
-                                image_urls.append(original_url)
+                content = data.get('data', {}).get('content', {})
+                product_layouts = content.get('productLayouts', {})
+                simple_items = product_layouts.get('simpleItems', [])
+                
+                current_url = response.url.rstrip('/')
+                
+                matching_item = None
+                for item in simple_items:
+                    if isinstance(item, dict):
+                        item_url = item.get('url', '').rstrip('/')
+                        if item_url and item_url == current_url:
+                            matching_item = item
+                            break
+                
+                if matching_item:
+                    gallery = matching_item.get('gallery', [])
+                    if isinstance(gallery, list):
+                        for img in gallery:
+                            if isinstance(img, dict):
+                                original_url = img.get('original')
+                                if original_url:
+                                    image_urls.append(original_url)
+                        
+                        if image_urls:
+                            return '\n'.join(image_urls)
+                
+                if not image_urls:
+                    main_data = data.get('data', {})
+                    content = main_data.get('content', {})
+                    gallery = content.get('gallery', [])
+                    if isinstance(gallery, list):
+                        for img in gallery:
+                            if isinstance(img, dict):
+                                original_url = img.get('original')
+                                if original_url:
+                                    image_urls.append(original_url)
+                        
+                        if image_urls:
+                            return '\n'.join(image_urls)
+                            
             except Exception as e:
-                self.logger.error(f"Failed to extract images: {e}")
-                raise
+                self.logger.debug(f"Error extracting images: {e}")
+        
         return '\n'.join(image_urls) if image_urls else ''
 
     def extract_dimensions(self, response):
