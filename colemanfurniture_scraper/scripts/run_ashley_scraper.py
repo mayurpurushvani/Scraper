@@ -305,84 +305,9 @@ def split_into_chunks(url_list, chunk_size):
         chunks.append(url_list[i:i + chunk_size])
     return chunks
 
-def normalize_and_deduplicate():
-    import sys
-    import json
-    from urllib.parse import urlparse
-    
-    def normalize_url(url):
-        if not url:
-            return None
-        url = url.rstrip('/')
-        parsed = urlparse(url)
-        return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
-    
-    if len(sys.argv) < 4 or sys.argv[1] != '--deduplicate':
-        print("Usage: python run_ashley_scraper.py --deduplicate input1.json input2.json ... --output output.json")
-        return
-    
-    input_files = []
-    output_file = None
-    
-    i = 2
-    while i < len(sys.argv):
-        if sys.argv[i] == '--output' and i + 1 < len(sys.argv):
-            output_file = sys.argv[i + 1]
-            i += 2
-        else:
-            input_files.append(sys.argv[i])
-            i += 1
-    
-    if not input_files or not output_file:
-        print("Error: Need input files and output file", file=sys.stderr)
-        return
-    
-    all_urls = []
-    manufacturer_id = "250"
-    
-    for file_path in input_files:
-        try:
-            with open(file_path, 'r') as f:
-                data = json.load(f)
-                urls = data.get('urls', [])
-                all_urls.extend(urls)
-                if 'manufacturer_id' in data and manufacturer_id == "250":
-                    manufacturer_id = data['manufacturer_id']
-        except Exception as e:
-            print(f"Error reading {file_path}: {e}", file=sys.stderr)
-    
-    print(f"Total URLs before deduplication: {len(all_urls)}", file=sys.stderr)
-    
-    url_map = {}
-    for url in all_urls:
-        if url:
-            normalized = normalize_url(url)
-            if normalized and normalized not in url_map:
-                url_map[normalized] = url
-    
-    unique_urls = list(url_map.values())
-    
-    print(f"Unique URLs after normalization: {len(unique_urls)}", file=sys.stderr)
-    print(f"Removed {len(all_urls) - len(unique_urls)} duplicates", file=sys.stderr)
-    
-    output_data = {
-        "urls": unique_urls,
-        "total_urls": len(unique_urls),
-        "manufacturer_id": manufacturer_id
-    }
-    
-    with open(output_file, 'w') as f:
-        json.dump(output_data, f, indent=2)
-    
-    print(f"Output written to {output_file}", file=sys.stderr)
-    print(f"OUTPUT_FILE={output_file}")
-
 def main():
     parser = argparse.ArgumentParser(description='Ashley Furniture Scraper')
-
-    parser.add_argument('--deduplicate', action='store_true', help='Deduplicate URL files')
-    parser.add_argument('--output', help='Output file for deduplication')
-
+    
     parser.add_argument('--manufacturer-id', default='250', help='Manufacturer ID for Ashley')
     parser.add_argument('--start-page', type=int, default=1, help='Start page number')
     parser.add_argument('--end-page', type=int, default=150, help='End page number')
@@ -402,9 +327,7 @@ def main():
     parser.add_argument('--max-urls-per-sitemap', type=int, default=0, help='Max URLs per sitemap (compatibility)')
     
     args = parser.parse_args()
-    if args.deduplicate:
-        normalize_and_deduplicate()
-        return
+    
     os.makedirs(args.output_dir, exist_ok=True)
     
     if args.urls_file is None:
