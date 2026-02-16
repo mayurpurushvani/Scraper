@@ -180,9 +180,9 @@ jobs:
         with:
           path: url_chunks
           
-      - name: Merge URL chunks
+      - name: Merge URL chunks and remove duplicates
         run: |
-          echo "=== Merging URL chunks ==="
+          echo "=== Merging URL chunks and removing duplicates ==="
           
           # Find all JSON files
           JSON_FILES=$(find url_chunks -name "*.json" -type f)
@@ -194,21 +194,43 @@ jobs:
           
           echo "Found $(echo "$JSON_FILES" | wc -l) URL files"
           
-          # Create merged URLs array
-          echo '{"urls": [], "total_urls": 0, "manufacturer_id": "${{ github.event.inputs.manufacturer_id }}"}' > merged_urls.json
+          # Extract all URLs to a temporary file (one URL per line)
+          TEMP_URLS_FILE="all_urls.txt"
+          > "$TEMP_URLS_FILE"
           
-          TOTAL_URLS=0
           for f in $JSON_FILES; do
             echo "Processing: $f"
-            # Extract URLs and append to merged file
-            jq -c '.urls[]' "$f" | while read -r url; do
-              jq --arg url "$url" '.urls += [$url] | .total_urls += 1' merged_urls.json > tmp.json && mv tmp.json merged_urls.json
-            done
+            jq -r '.urls[]' "$f" >> "$TEMP_URLS_FILE"
           done
           
-          # Get final count
-          TOTAL_URLS=$(jq '.total_urls' merged_urls.json)
-          echo "Merged $TOTAL_URLS total URLs"
+          # Count original total
+          ORIGINAL_COUNT=$(wc -l < "$TEMP_URLS_FILE")
+          echo "Original total URLs (with duplicates): $ORIGINAL_COUNT"
+          
+          # Sort and get unique URLs
+          UNIQUE_URLS_FILE="unique_urls.txt"
+          sort "$TEMP_URLS_FILE" | uniq > "$UNIQUE_URLS_FILE"
+          
+          # Count unique URLs
+          UNIQUE_COUNT=$(wc -l < "$UNIQUE_URLS_FILE")
+          DUPLICATE_COUNT=$((ORIGINAL_COUNT - UNIQUE_COUNT))
+          
+          echo "Unique URLs: $UNIQUE_COUNT"
+          echo "Removed $DUPLICATE_COUNT duplicate URLs"
+          
+          # Build final JSON with unique URLs
+          echo '{"urls": [], "total_urls": 0, "manufacturer_id": "${{ github.event.inputs.manufacturer_id }}"}' > merged_urls.json
+          
+          while IFS= read -r url; do
+            if [ -n "$url" ]; then
+              jq --arg url "$url" '.urls += [$url] | .total_urls += 1' merged_urls.json > tmp.json && mv tmp.json merged_urls.json
+            fi
+          done < "$UNIQUE_URLS_FILE"
+          
+          # Clean up temp files
+          rm -f "$TEMP_URLS_FILE" "$UNIQUE_URLS_FILE"
+          
+          echo "Final merged JSON contains $(jq '.total_urls' merged_urls.json) unique URLs"
           
           # Save with timestamp
           TIMESTAMP=$(date +%Y%m%d_%H%M%S)
