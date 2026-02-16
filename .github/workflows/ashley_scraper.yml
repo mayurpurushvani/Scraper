@@ -201,7 +201,7 @@ jobs:
           
           # Call the Python deduplicate function
           echo "Running Python deduplication..."
-          OUTPUT=$(python colemanfurniture_scraper/scripts/run_ashley_scraper.py \
+          OUTPUT=$(python run_ashley_scraper.py \
             --deduplicate $JSON_FILES \
             --output "$OUTPUT_FILE")
           
