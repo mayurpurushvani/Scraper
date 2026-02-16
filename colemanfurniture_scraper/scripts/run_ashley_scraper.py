@@ -379,7 +379,10 @@ def normalize_and_deduplicate():
 
 def main():
     parser = argparse.ArgumentParser(description='Ashley Furniture Scraper')
-    
+
+    parser.add_argument('--deduplicate', action='store_true', help='Deduplicate URL files')
+    parser.add_argument('--output', help='Output file for deduplication')
+
     parser.add_argument('--manufacturer-id', default='250', help='Manufacturer ID for Ashley')
     parser.add_argument('--start-page', type=int, default=1, help='Start page number')
     parser.add_argument('--end-page', type=int, default=150, help='End page number')
