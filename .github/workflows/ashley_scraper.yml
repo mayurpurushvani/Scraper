@@ -175,12 +175,21 @@ jobs:
       urls_file: ${{ steps.save_merged.outputs.urls_file }}
       
     steps:
-      - uses: actions/checkout@v4  # This puts you in $GITHUB_WORKSPACE automatically
+      - uses: actions/checkout@v4
       
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f "colemanfurniture_scraper/requirements.txt" ]; then
+            pip install -r colemanfurniture_scraper/requirements.txt
+          else
+            pip install scrapy pandas lxml requests
+          fi
           
       - name: Download all URL artifacts
         uses: actions/download-artifact@v4
