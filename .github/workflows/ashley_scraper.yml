@@ -200,25 +200,28 @@ jobs:
         run: |
           echo "=== Merging URL chunks and removing duplicates ==="
           
-          # Find all JSON files
-          JSON_FILES=$(find url_chunks -name "*.json" -type f)
+          # Find all JSON files and store them in an array
+          JSON_FILES=$(find url_chunks -name "*.json" -type f | tr '\n' ' ')
           
           if [ -z "$JSON_FILES" ]; then
             echo "No URL files found to merge"
             exit 1
           fi
           
-          echo "Found $(echo "$JSON_FILES" | wc -l) URL files"
+          # Count files
+          FILE_COUNT=$(find url_chunks -name "*.json" -type f | wc -l)
+          echo "Found $FILE_COUNT URL files"
           
           # Create output filename with timestamp
           TIMESTAMP=$(date +%Y%m%d_%H%M%S)
           mkdir -p output
           OUTPUT_FILE="output/ashley_urls_complete_${TIMESTAMP}.json"
           
-          # Run Python deduplication
+          # Run Python deduplication - pass files as a single quoted string
           python colemanfurniture_scraper/scripts/run_ashley_scraper.py \
-            --deduplicate $JSON_FILES \
-            --output "$OUTPUT_FILE"
+            --deduplicate \
+            --output "$OUTPUT_FILE" \
+            $JSON_FILES
           
           # Check if output file was created
           if [ -f "$OUTPUT_FILE" ]; then
