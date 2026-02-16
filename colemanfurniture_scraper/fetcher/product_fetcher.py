@@ -56,20 +56,10 @@ class ProductFetcher(Spider):
         self.domain = parsed_url.netloc
         self.base_domain = '.'.join(self.domain.split('.')[-2:]).replace('.', '_')
         
-        safe_domain = self.base_domain.replace('.', '_')
-        self.tracking_file = Path(f"processed_urls_{safe_domain}_{self.job_id}_chunk{self.chunk_id}.json")
-        self.master_file = Path(f"processed_urls_{safe_domain}_master.json")
+        # SIMPLE DEDUPLICATION: Use a set to track URLs processed in this job
+        self.processed_in_this_job = set()
         
-        # Load all processed URLs from master file
-        self.processed_urls = self.load_master_file()
-        self.new_urls = set()
-        self.save_counter = 0
-        self.batch_size = 50  # Save after every 50 new URLs
-        
-        self.logger.info(f"📁 File tracking initialized:")
-        self.logger.info(f"  - Master file: {self.master_file}")
-        self.logger.info(f"  - Job file: {self.tracking_file}")
-        self.logger.info(f"  - Already processed URLs in master: {len(self.processed_urls)}")
+        self.logger.info(f"📁 Starting job {self.job_id} - chunk {self.chunk_id}")
         
         # Only process sitemaps if not in Ashley mode
         if not self.is_ashley:
@@ -93,86 +83,6 @@ class ProductFetcher(Spider):
                 self.logger.error(f"Failed to discover sitemap: {e}")
                 raise
     
-    # ========== FILE TRACKING METHODS ==========
-    
-    def load_master_file(self):
-        """Load master list of processed URLs"""
-        try:
-            if self.master_file.exists():
-                with open(self.master_file, 'r') as f:
-                    data = json.load(f)
-                    urls = set(data.get('urls', []))
-                    self.logger.info(f"📖 Loaded {len(urls)} URLs from master file")
-                    return urls
-            else:
-                self.logger.info("📖 No master file found, starting fresh")
-                return set()
-        except Exception as e:
-            self.logger.error(f"Error loading master file: {e}")
-            return set()
-    
-    def save_job_file(self):
-        """Save URLs processed by this job"""
-        try:
-            # Only save if we have new URLs
-            if not self.new_urls:
-                return
-                
-            with open(self.tracking_file, 'w') as f:
-                json.dump({
-                    'urls': list(self.new_urls),
-                    'job_id': self.job_id,
-                    'chunk_id': self.chunk_id,
-                    'total_chunks': self.total_chunks,
-                    'timestamp': time.time(),
-                    'count': len(self.new_urls)
-                }, f, indent=2)
-            
-            self.logger.info(f"Saved job file with {len(self.new_urls)} new URLs")
-            self.save_counter = 0
-            
-        except Exception as e:
-            self.logger.error(f"Error saving job file: {e}")
-    
-    def update_master_file(self):
-        """Update master file with all URLs from all jobs"""
-        # This will be called in the GitHub Actions workflow step
-        # Not directly used by the spider, but included for completeness
-        pass
-    
-    def is_url_processed(self, url):
-        """Check if URL is in master list or already found by this job"""
-        # Normalize URL to avoid duplicates with/without trailing slash
-        normalized_url = url.rstrip('/')
-        
-        # Check in-memory sets first (fastest)
-        if normalized_url in self.processed_urls or normalized_url in self.new_urls:
-            return True
-        
-        # Reload master file periodically (every 100 checks) to catch updates from other jobs
-        self.check_counter = getattr(self, 'check_counter', 0) + 1
-        if self.check_counter % 100 == 0:
-            old_count = len(self.processed_urls)
-            self.processed_urls.update(self.load_master_file())
-            if len(self.processed_urls) > old_count:
-                self.logger.info(f"🔄 Master file updated: +{len(self.processed_urls) - old_count} new URLs from other jobs")
-            
-            # Check again after reload
-            if normalized_url in self.processed_urls:
-                return True
-        
-        return False
-    
-    def mark_url_processed(self, url):
-        """Mark URL as processed"""
-        normalized_url = url.rstrip('/')
-        self.new_urls.add(normalized_url)
-        self.save_counter += 1
-        
-        # Save job file periodically
-        if self.save_counter >= self.batch_size:
-            self.save_job_file()
-    
     def get_headers(self):
         """Get headers for Ashley requests"""
         return {
@@ -184,6 +94,15 @@ class ProductFetcher(Spider):
             'Upgrade-Insecure-Requests': '1',
             'Cache-Control': 'max-age=0',
         }
+    
+    def normalize_url(self, url):
+        """Normalize URL for consistent deduplication"""
+        if not url:
+            return url
+        # Remove trailing slash and fragment
+        parsed = urlparse(url)
+        normalized = f"{parsed.scheme}://{parsed.netloc}{parsed.path.rstrip('/')}"
+        return normalized
           
     def start_requests(self):
         if self.is_ashley:
@@ -207,12 +126,17 @@ class ProductFetcher(Spider):
             else:
                 self.logger.info(f"Ashley mode: Processing {len(self.ashley_urls)} direct product URLs")
             
-            # Create requests for each URL
+            # Create requests for each URL with Scrapy's built-in dupefilter
             for i, url in enumerate(urls_to_process):
-                # Skip if already processed by any job
-                if self.is_url_processed(url):
-                    self.logger.info(f"⏭️ URL already processed by another job: {url}")
+                normalized_url = self.normalize_url(url)
+                
+                # Skip if already processed in this job
+                if normalized_url in self.processed_in_this_job:
+                    self.logger.info(f"⏭️ URL already processed in this job: {normalized_url}")
                     continue
+                
+                # Add to job tracking set
+                self.processed_in_this_job.add(normalized_url)
                 
                 # Add referer for subsequent requests
                 headers = self.get_headers()
@@ -230,7 +154,7 @@ class ProductFetcher(Spider):
                     },
                     errback=self.handle_product_error,
                     priority=10,
-                    dont_filter=True,
+                    dont_filter=True,  # Bypass Scrapy's dupefilter since we handle it
                     headers=headers
                 )
             return
@@ -274,11 +198,16 @@ class ProductFetcher(Spider):
                 continue
             pdp_count += 1
             
-            # Check if URL already processed before yielding request
-            if self.is_url_processed(url):
-                self.logger.info(f"⏭️ URL already processed: {url}")
+            normalized_url = self.normalize_url(url)
+            
+            # Check if URL already processed in this job
+            if normalized_url in self.processed_in_this_job:
+                self.logger.info(f"⏭️ URL already processed in this job: {normalized_url}")
                 continue
-                
+            
+            # Add to job tracking set
+            self.processed_in_this_job.add(normalized_url)
+            
             yield Request(
                 url,
                 callback=self.parse_product_page_with_check,
@@ -297,10 +226,16 @@ class ProductFetcher(Spider):
         return '/' in path
 
     def parse_product_page_with_check(self, response):
-        # Check if URL already processed (double-check for safety)
-        if self.is_url_processed(response.url):
-            self.logger.info(f"⏭️ URL already processed, skipping: {response.url}")
+        # Simple deduplication check
+        normalized_url = self.normalize_url(response.url)
+        
+        # Check if we've already processed this URL in this job
+        if normalized_url in self.processed_in_this_job and normalized_url != response.url:
+            self.logger.info(f"⏭️ URL already processed in this job, skipping: {response.url}")
             return
+        elif normalized_url not in self.processed_in_this_job:
+            # Add to tracking set if not already there
+            self.processed_in_this_job.add(normalized_url)
         
         json_scripts = response.xpath('//script[@type="application/ld+json"]/text()').getall()
         has_product_json = False
@@ -338,10 +273,6 @@ class ProductFetcher(Spider):
                 self.logger.debug(f"Error parsing JSON-LD: {e}")
                 continue
         
-        # Mark URL as processed NOW, before yielding bundle products
-        # This prevents infinite loops where bundle products reference back
-        self.mark_url_processed(response.url)
-        
         if has_product_json:
             self.logger.info(f"✅ Found Product JSON-LD for {response.url}")
             yield from self.parse_product_page(response)
@@ -373,10 +304,15 @@ class ProductFetcher(Spider):
                         self.logger.info(f"Skipping self-reference or empty URL: {sub_product_url}")
                         continue
                     
-                    # Check if sub-product URL is already processed before yielding
-                    if self.is_url_processed(sub_product_url):
-                        self.logger.info(f"⏭️ Bundle product already processed: {item_short_name} - {sub_product_url}")
+                    normalized_url = self.normalize_url(sub_product_url)
+                    
+                    # Check if sub-product URL is already processed in this job
+                    if normalized_url in self.processed_in_this_job:
+                        self.logger.info(f"⏭️ Bundle product already processed in this job: {item_short_name} - {normalized_url}")
                         continue
+                    
+                    # Add to job tracking set before yielding
+                    self.processed_in_this_job.add(normalized_url)
                     
                     self.logger.info(f"📦 Found unique sub-product: {item_short_name}")
                     yield Request(
@@ -974,7 +910,5 @@ class ProductFetcher(Spider):
         self.logger.error(f"Product page request failed: {failure.value}")
     
     def closed(self, reason):
-        """Save any remaining URLs when spider closes"""
-        self.logger.info(f"🛑 Spider closing. Saving final job file...")
-        self.save_job_file()
-        self.logger.info(f"📊 Stats - New URLs found in this job: {len(self.new_urls)}")
+        """Log stats when spider closes"""
+        self.logger.info(f"🛑 Spider closing. URLs processed in this job: {len(self.processed_in_this_job)}")
