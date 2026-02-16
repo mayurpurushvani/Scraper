@@ -594,10 +594,6 @@ jobs:
           put ashley_products_full.csv -o $TIMESTAMPED_FILE
           echo "Uploaded: $TIMESTAMPED_FILE"
           
-          # Also upload as latest (overwrite)
-          put ashley_products_full.csv -o ashley_furniture_latest.csv
-          echo "Uploaded: ashley_furniture_latest.csv"
-          
           # Keep only last 7 daily files
           ls | grep "ashley_furniture_.*_[0-9]\{8\}\.csv" | sort | head -n -7 | xargs -r rm
           
