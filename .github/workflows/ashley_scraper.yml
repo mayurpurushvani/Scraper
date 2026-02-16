@@ -143,7 +143,7 @@ jobs:
           echo "Pages: $START_PAGE - $END_PAGE"
           
           # Run URL collection script
-           \
+          OUTPUT=$(python colemanfurniture_scraper/scripts/run_ashley_scraper.py \
             --manufacturer-id "$MANUFACTURER_ID" \
             --start-page "$START_PAGE" \
             --end-page "$END_PAGE" \
@@ -201,7 +201,7 @@ jobs:
           
           # Call the Python deduplicate function
           echo "Running Python deduplication..."
-          OUTPUT=$(python run_ashley_scraper.py \
+          OUTPUT=$(python colemanfurniture_scraper/scripts/run_ashley_scraper.py \
             --deduplicate $JSON_FILES \
             --output "$OUTPUT_FILE")
           
