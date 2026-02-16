@@ -194,49 +194,24 @@ jobs:
           
           echo "Found $(echo "$JSON_FILES" | wc -l) URL files"
           
-          # Extract all URLs to a temporary file (one URL per line)
-          TEMP_URLS_FILE="all_urls.txt"
-          > "$TEMP_URLS_FILE"
-          
-          for f in $JSON_FILES; do
-            echo "Processing: $f"
-            jq -r '.urls[]' "$f" >> "$TEMP_URLS_FILE"
-          done
-          
-          # Count original total
-          ORIGINAL_COUNT=$(wc -l < "$TEMP_URLS_FILE")
-          echo "Original total URLs (with duplicates): $ORIGINAL_COUNT"
-          
-          # Sort and get unique URLs
-          UNIQUE_URLS_FILE="unique_urls.txt"
-          sort "$TEMP_URLS_FILE" | uniq > "$UNIQUE_URLS_FILE"
-          
-          # Count unique URLs
-          UNIQUE_COUNT=$(wc -l < "$UNIQUE_URLS_FILE")
-          DUPLICATE_COUNT=$((ORIGINAL_COUNT - UNIQUE_COUNT))
-          
-          echo "Unique URLs: $UNIQUE_COUNT"
-          echo "Removed $DUPLICATE_COUNT duplicate URLs"
-          
-          # Build final JSON with unique URLs
-          echo '{"urls": [], "total_urls": 0, "manufacturer_id": "${{ github.event.inputs.manufacturer_id }}"}' > merged_urls.json
-          
-          while IFS= read -r url; do
-            if [ -n "$url" ]; then
-              jq --arg url "$url" '.urls += [$url] | .total_urls += 1' merged_urls.json > tmp.json && mv tmp.json merged_urls.json
-            fi
-          done < "$UNIQUE_URLS_FILE"
-          
-          # Clean up temp files
-          rm -f "$TEMP_URLS_FILE" "$UNIQUE_URLS_FILE"
-          
-          echo "Final merged JSON contains $(jq '.total_urls' merged_urls.json) unique URLs"
-          
-          # Save with timestamp
+          # Create output filename with timestamp
           TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-          OUTPUT_FILE="output/ashley_urls_complete_${TIMESTAMP}.json"
           mkdir -p output
-          cp merged_urls.json "$OUTPUT_FILE"
+          OUTPUT_FILE="output/ashley_urls_complete_${TIMESTAMP}.json"
+          
+          # Call the Python deduplicate function
+          echo "Running Python deduplication..."
+          OUTPUT=$(python colemanfurniture_scraper/scripts/run_ashley_scraper.py \
+            --deduplicate $JSON_FILES \
+            --output "$OUTPUT_FILE")
+          
+          # Extract the output file path from Python script output
+          OUTPUT_FILE=$(echo "$OUTPUT" | grep "OUTPUT_FILE=" | cut -d'=' -f2)
+          
+          if [ -z "$OUTPUT_FILE" ]; then
+            echo "Error: Failed to get output file from Python script"
+            exit 1
+          fi
           
           echo "OUTPUT_FILE=$OUTPUT_FILE" >> $GITHUB_ENV
           
