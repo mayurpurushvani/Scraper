@@ -175,6 +175,22 @@ jobs:
       urls_file: ${{ steps.save_merged.outputs.urls_file }}
       
     steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f "colemanfurniture_scraper/requirements.txt" ]; then
+            pip install -r colemanfurniture_scraper/requirements.txt
+          else
+            pip install scrapy pandas lxml requests
+          fi
+          
       - name: Download all URL artifacts
         uses: actions/download-artifact@v4
         with:
@@ -184,15 +200,17 @@ jobs:
         run: |
           echo "=== Merging URL chunks ==="
           
-          # Find all JSON files
-          JSON_FILES=$(find url_chunks -name "*.json" -type f)
+          # Find all JSON files and store them in an array
+          JSON_FILES=$(find url_chunks -name "*.json" -type f | tr '\n' ' ')
           
           if [ -z "$JSON_FILES" ]; then
             echo "No URL files found to merge"
             exit 1
           fi
           
-          echo "Found $(echo "$JSON_FILES" | wc -l) URL files"
+          # Count files
+          FILE_COUNT=$(find url_chunks -name "*.json" -type f | wc -l)
+          echo "Found $FILE_COUNT URL files"
           
           # Create merged URLs array
           echo '{"urls": [], "total_urls": 0, "manufacturer_id": "${{ github.event.inputs.manufacturer_id }}"}' > merged_urls.json
@@ -215,8 +233,6 @@ jobs:
           OUTPUT_FILE="output/ashley_urls_complete_${TIMESTAMP}.json"
           mkdir -p output
           cp merged_urls.json "$OUTPUT_FILE"
-          
-          echo "OUTPUT_FILE=$OUTPUT_FILE" >> $GITHUB_ENV
           
       - name: Save merged URLs file info
         id: save_merged
