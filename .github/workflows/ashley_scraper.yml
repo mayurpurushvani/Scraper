@@ -426,9 +426,9 @@ jobs:
         with:
           path: product_chunks
           
-      - name: Merge product CSVs
+      - name: Merge product CSVs and remove duplicates
         run: |
-          echo "=== Merging Product CSV Files ==="
+          echo "=== Merging Product CSV Files and Removing Duplicates ==="
           
           # Find all product CSV files
           CSV_FILES=$(find product_chunks -name "ashley_products_chunk_*.csv" -type f)
@@ -448,20 +448,42 @@ jobs:
             # Extract headers (first line)
             head -n 1 "$FIRST_FILE" > ashley_products_full.csv
             
-            # Merge all files (skip headers)
+            # Create a temporary file for all data
+            TEMP_DATA_FILE="all_product_data.txt"
+            > "$TEMP_DATA_FILE"
+            
+            # Collect all data rows
             TOTAL_ROWS=0
             for f in $CSV_FILES; do
-              echo "Merging: $f"
+              echo "Processing: $f"
               # Count rows in this file (excluding header)
               if [ -s "$f" ] && [ "$(wc -l < "$f")" -gt 1 ]; then
                 FILE_ROWS=$(tail -n +2 "$f" | sed '/^$/d' | wc -l)
                 TOTAL_ROWS=$((TOTAL_ROWS + FILE_ROWS))
-                # Append data
-                tail -n +2 "$f" | sed '/^$/d' >> ashley_products_full.csv
+                # Append data to temp file
+                tail -n +2 "$f" | sed '/^$/d' >> "$TEMP_DATA_FILE"
               fi
             done
             
-            echo "Merged $TOTAL_ROWS total product rows"
+            echo "Total rows collected (including duplicates): $TOTAL_ROWS"
+            
+            # Remove duplicates based on Ref Product URL (first column)
+            # Using awk to keep first occurrence of each URL
+            awk -F',' '!seen[$1]++' "$TEMP_DATA_FILE" > unique_data.txt
+            
+            UNIQUE_ROWS=$(wc -l < unique_data.txt)
+            DUPLICATE_ROWS=$((TOTAL_ROWS - UNIQUE_ROWS))
+            
+            echo "Unique rows: $UNIQUE_ROWS"
+            echo "Removed $DUPLICATE_ROWS duplicate product entries"
+            
+            # Append unique data to final CSV
+            cat unique_data.txt >> ashley_products_full.csv
+            
+            # Clean up temp files
+            rm -f "$TEMP_DATA_FILE" unique_data.txt
+            
+            echo "Merged $UNIQUE_ROWS unique product rows (removed $DUPLICATE_ROWS duplicates)"
           fi
           
       - name: Build output filename
